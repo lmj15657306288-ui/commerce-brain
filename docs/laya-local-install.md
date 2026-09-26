@@ -127,6 +127,7 @@ Commerce Brain 必须在本地把 `answers` 映射到有限 action space，再�
 - 实际响应包含 `answers`、`model`、`routing`、`usage`
 - MPS 可用，推理返回有限 choice `CHECK_PRODUCT`
 - 监听地址为 `127.0.0.1:8765`
+- `bridge/laya_client.py` 已通过 7/7 单测，并完成一次真实服务调用
 
 当前服务以受控前台进程验证；LaunchAgent、启动/停止脚本属于后续 Step 13，尚未宣称完成。
 

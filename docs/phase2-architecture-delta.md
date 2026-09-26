@@ -218,4 +218,6 @@ bridge/routes/browser.py
 
 ## Next Gate
 
-Step 2 已确认 Laya 可安装，实际版本为 `0.3.20`，并在本机以 `127.0.0.1:8765` 启动。`/health` 和 `/v1/systemone` 已真实探测；认证、畸形 JSON 和预加载 checkpoint 均已验证。详见 `docs/laya-local-install.md`。下一步进入 Step 3，创建只负责 HTTP/timeout/auth/safe JSON 的 `bridge/laya_client.py`。
+Step 2 已确认 Laya 可安装，实际版本为 `0.3.20`，并在本机以 `127.0.0.1:8765` 启动。`/health` 和 `/v1/systemone` 已真实探测；认证、畸形 JSON 和预加载 checkpoint 均已验证。详见 `docs/laya-local-install.md`。
+
+Step 3 已完成：`bridge/laya_client.py` 只负责 loopback HTTP、Bearer header、timeout、延迟、响应大小和 JSON object 校验；7/7 单测及一次真实本机 Laya 调用通过。下一步进入 Step 4，替换 `LayaProvider` 内部实现。
