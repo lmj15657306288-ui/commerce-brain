@@ -1,0 +1,12 @@
+{
+  "name": "mixed_cn_en",
+  "state": {
+    "online_users": 512,
+    "product_ctr": 0.029,
+    "cvr": 0.051,
+    "roi": 1.08,
+    "orders_velocity": 3.1,
+    "state_age_seconds": 2.0,
+    "operator_note": "直播间 live session is stable"
+  }
+}

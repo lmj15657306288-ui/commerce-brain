@@ -1,0 +1,16 @@
+{
+  "name": "traffic_up_ctr_down",
+  "state": {
+    "online_users": 2400,
+    "online_30s_delta_pct": 0.24,
+    "product_ctr": 0.021,
+    "product_ctr_2m_delta_pct": -0.24,
+    "cvr": 0.058,
+    "cvr_2m_delta_pct": -0.02,
+    "roi": 1.72,
+    "roi_2m_delta_pct": -0.08,
+    "orders_velocity": 8.1,
+    "spend_velocity": 121,
+    "state_age_seconds": 1.1
+  }
+}

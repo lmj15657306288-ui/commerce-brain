@@ -223,3 +223,5 @@ Step 2 已确认 Laya 可安装，实际版本为 `0.3.20`，并在本机以 `12
 Step 3 已完成：`bridge/laya_client.py` 只负责 loopback HTTP、Bearer header、timeout、延迟、响应大小和 JSON object 校验；7/7 单测及一次真实本机 Laya 调用通过。
 
 Step 4 已完成：`LayaProvider` 通过客户端调用真实 `/v1/systemone`，只映射到有限 action space，并对非法 action、低置信度、超时、离线和协议错误回退到真实标记的 Rules metadata。新增动作只有 `ESCALATE_SLOW_BRAIN`；29 项 Step 4 相关测试和一次真实 provider 集成调用通过。下一步进入 Step 5，建立 Laya fixture benchmark。
+
+Step 5 已完成：10 组 synthetic fixtures、100/1000 warm requests 和独立 cold start 均已运行。1000 次 service success/schema-valid 均为 100%，fallback 为 0%，p50 225.71ms、p95 263.23ms、p99 269.17ms；benchmark 明确不作业务准确率声明。详见 `docs/laya-local-benchmark.md`。下一步进入 Step 6，暴露现有 MCP 层的 Fast Brain 工具。

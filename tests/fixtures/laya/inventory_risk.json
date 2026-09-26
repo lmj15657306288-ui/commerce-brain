@@ -1,0 +1,12 @@
+{
+  "name": "inventory_risk",
+  "state": {
+    "online_users": 760,
+    "product_ctr": 0.045,
+    "cvr": 0.074,
+    "roi": 2.01,
+    "orders_velocity": 5.7,
+    "inventory_days": 1.5,
+    "state_age_seconds": 1.8
+  }
+}

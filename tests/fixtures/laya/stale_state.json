@@ -1,0 +1,11 @@
+{
+  "name": "stale_state",
+  "state": {
+    "online_users": 1832,
+    "product_ctr": 0.041,
+    "cvr": 0.062,
+    "roi": 1.91,
+    "orders_velocity": 7.8,
+    "state_age_seconds": 900
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "extreme_values",
+  "state": {
+    "online_users": 1000000,
+    "online_30s_delta_pct": -0.999,
+    "product_ctr": 1.0,
+    "product_ctr_2m_delta_pct": 12.0,
+    "cvr": 0.0,
+    "roi": 9999.0,
+    "orders_velocity": 0.0,
+    "spend_velocity": 1000000,
+    "state_age_seconds": 0
+  }
+}

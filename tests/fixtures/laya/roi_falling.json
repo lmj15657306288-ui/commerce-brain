@@ -1,0 +1,16 @@
+{
+  "name": "roi_falling",
+  "state": {
+    "online_users": 940,
+    "online_30s_delta_pct": -0.04,
+    "product_ctr": 0.038,
+    "product_ctr_2m_delta_pct": -0.07,
+    "cvr": 0.041,
+    "cvr_2m_delta_pct": -0.21,
+    "roi": 0.84,
+    "roi_2m_delta_pct": -0.31,
+    "orders_velocity": 2.2,
+    "spend_velocity": 88,
+    "state_age_seconds": 2.2
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ambiguous",
+  "state": {
+    "online_users": 420,
+    "online_30s_delta_pct": 0.01,
+    "product_ctr": 0.034,
+    "cvr": 0.052,
+    "roi": 1.02,
+    "orders_velocity": 2.0,
+    "spend_velocity": 58,
+    "state_age_seconds": 4.0,
+    "signal_quality": "mixed"
+  }
+}

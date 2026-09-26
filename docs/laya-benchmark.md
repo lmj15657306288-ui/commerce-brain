@@ -15,7 +15,7 @@ class DecisionProvider:
 当前实现：
 
 - `RulesProvider`：确定性本地规则，零网络依赖。
-- `LayaProvider`：本地 Laya 适配边界；当前机器没有接入 Laya runtime，因此明确使用 `rules-fallback` checkpoint，不伪造本地模型已加载。
+- `LayaProvider`：本地 Laya 适配边界；当前机器已接入 `127.0.0.1:8765` 的 typed-decisions checkpoint，失败时明确使用 `fallback_from_laya`，不伪造 Laya 成功。
 
 两者都只返回闭合结构：
 
@@ -41,16 +41,27 @@ cd /Users/linmengjiang/Projects/commerce-brain/bridge
 ../.venv/bin/python -m unittest test_decision_provider
 ```
 
-结果：`5/5` 通过，其中包含 `100` 次非敏感 fixture 决策。
+结果：Step 4 provider 测试通过，Step 5 fixture contract 测试 `2/2` 通过。
 
 覆盖：
 
 - ROI 风险触发 `CHECK_CAMPAIGN`
 - 库存风险触发 `CHECK_PRODUCT`
 - 缺失指标保持 `null` 并返回 `OBSERVE`
-- Laya 本地 adapter 的 fallback 边界
+- Laya 真实映射与 rules fallback 边界
 - 非法 action 和执行字段拒绝
+
+## Local Service Run
+
+2026-09-26 在 Apple Silicon MPS、本机 `laya 0.3.20`、`typed-decisions` checkpoint 上完成：
+
+| 次数 | service success | schema-valid | fallback | p50 | p95 | p99 | RSS | 吞吐 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 100% | 100% | 0% | 226.32ms | 260.67ms | 291.72ms | 86.73MB | 4.35 req/s |
+| 1000 | 100% | 100% | 0% | 225.71ms | 263.23ms | 269.17ms | 82.47MB | 4.47 req/s |
+
+独立预加载 cold start：`8670.37ms`。1000 次运行耗时 `223.52s`。报告中的 `accuracy_claim=false`，不代表业务准确率。
 
 ## 当前限制
 
-这不是 Laya 模型性能基准，也没有宣称 Laya checkpoint 已在本机加载。它是第一阶段的本地 provider 合同与稳定性基线；接入真实 Laya runtime 前，必须继续保持 proposal-only、schema validation 和 `can_execute=false`。
+这不是业务准确率评估。它是本机 provider 合同、HTTP 服务和 schema 稳定性基线；仍必须保持 proposal-only、schema validation 和 `can_execute=false`。

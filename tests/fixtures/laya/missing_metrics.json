@@ -1,0 +1,13 @@
+{
+  "name": "missing_metrics",
+  "state": {
+    "online_users": null,
+    "online_30s_delta_pct": null,
+    "product_ctr": null,
+    "product_ctr_2m_delta_pct": null,
+    "cvr": null,
+    "roi": null,
+    "orders_velocity": null,
+    "state_age_seconds": 8.0
+  }
+}
