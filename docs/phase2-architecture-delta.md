@@ -213,9 +213,9 @@ bridge/routes/browser.py
 - [x] 备份 Codex 和 Hermes 配置到用户目录，未进入 Git。
 - [x] 完成 Architecture Delta，明确 KEEP / EXTEND / SPLIT LATER / NEW / DO NOT TOUCH。
 - [x] 复核 V1 测试基线并记录已知失败。
-- [ ] Laya 服务部署与真实路由探测。
+- [x] Laya 服务部署与真实路由探测。
 - [ ] Fast Brain / Hermes / Browser Runtime 实现。
 
 ## Next Gate
 
-进入 Step 2 前，先确认 Laya 官方包在本机可安装、实际版本和 `/v1/systemone` schema；只使用 `127.0.0.1`，不假设 README 返回格式，不把 key 写入 Git。Laya 不可用时保留 adapter/mock 边界，不伪造成功。
+Step 2 已确认 Laya 可安装，实际版本为 `0.3.20`，并在本机以 `127.0.0.1:8765` 启动。`/health` 和 `/v1/systemone` 已真实探测；认证、畸形 JSON 和预加载 checkpoint 均已验证。详见 `docs/laya-local-install.md`。下一步进入 Step 3，创建只负责 HTTP/timeout/auth/safe JSON 的 `bridge/laya_client.py`。
