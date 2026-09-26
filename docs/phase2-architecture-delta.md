@@ -226,4 +226,6 @@ Step 4 已完成：`LayaProvider` 通过客户端调用真实 `/v1/systemone`，
 
 Step 5 已完成：10 组 synthetic fixtures、100/1000 warm requests 和独立 cold start 均已运行。1000 次 service success/schema-valid 均为 100%，fallback 为 0%，p50 225.71ms、p95 263.23ms、p99 269.17ms；benchmark 明确不作业务准确率声明。详见 `docs/laya-local-benchmark.md`。
 
-Step 6 已完成：现有 MCP server 增量暴露 5 个 Fast Brain proposal-only 工具。工具只接受有界脱敏状态或 `LiveStateSnapshot` fixture，provider 失败时 fail closed，所有响应强制 `execution_allowed=false`、`can_execute=false`、`execution_performed=false`。`test_mcp_fast_tools`、`test_mcp_ai_tools`、`test_decision_provider`、`test_live_state` 共 `25/25` 通过，详见 `docs/mcp-fast-tools.md`。下一步进入 Step 7，建立 Hermes SlowTask 合同和最小角色边界。
+Step 6 已完成：现有 MCP server 增量暴露 5 个 Fast Brain proposal-only 工具。工具只接受有界脱敏状态或 `LiveStateSnapshot` fixture，provider 失败时 fail closed，所有响应强制 `execution_allowed=false`、`can_execute=false`、`execution_performed=false`。`test_mcp_fast_tools`、`test_mcp_ai_tools`、`test_decision_provider`、`test_live_state` 共 `25/25` 通过，详见 `docs/mcp-fast-tools.md`。
+
+Step 6.5 进入实现：Commerce Brain MCP 已追加注册到 Codex，真实调用和 Laya 在线/fallback 状态验证记录在 `docs/mcp-fast-tools.md`。Hermes SlowTask 草稿暂不作为本阶段完成项；按用户新指令暂停原 GOAL 的 Hermes 顺序，转入 Phase 2B Central Brain 设计。

@@ -2,7 +2,9 @@
 
 更新时间：2026-09-26
 
-Step 6 在现有 `bridge/server.py` 上增量暴露 5 个 Fast Brain MCP 工具。实现位于 `bridge/mcp_fast_tools.py`，不创建独立 MCP 项目，也不修改 Codex 的 MCP 配置。
+Step 6 在现有 `bridge/server.py` 上增量暴露 5 个 Fast Brain MCP 工具。实现位于 `bridge/mcp_fast_tools.py`，不创建独立 MCP 项目。
+
+Step 6.5 通过 `scripts/run_commerce_brain_mcp.py` 以 stdio 方式注册到 Codex。launcher 只在子进程内存中读取本机 Laya key 文件；key 不写入 `~/.codex/config.toml`、日志或仓库。
 
 ## 工具
 
@@ -54,3 +56,15 @@ cd /Users/linmengjiang/Projects/commerce-brain/bridge
 ```
 
 结果：`25/25` 通过。另已通过 `py_compile` 与 `git diff --check`。
+
+## Codex Integration
+
+注册命令：
+
+```bash
+codex mcp add commerce_brain -- \
+  /Users/linmengjiang/Projects/commerce-brain/.venv/bin/python \
+  /Users/linmengjiang/Projects/commerce-brain/scripts/run_commerce_brain_mcp.py
+```
+
+实际 stdio 调用已验证 8 个工具可见，其中 Fast Brain 5 个工具均可调用。Laya 在线时结果必须带 `provider=laya`、`checkpoint=typed-decisions`；Laya 停止时结果必须带 `provider=rules`、`checkpoint=fallback_from_laya`。两种状态都固定 `execution_allowed=false`、`can_execute=false`、`execution_performed=false`。

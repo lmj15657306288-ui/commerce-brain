@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -123,7 +124,9 @@ class LayaClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ):
         self.base_url = _normalize_base_url(base_url)
-        self._api_key = str(api_key or "")
+        self._api_key = str(
+            api_key if api_key is not None else os.environ.get("COMMERCE_BRAIN_LAYA_API_KEY", "")
+        )
         self.timeout_seconds = _normalize_timeout(timeout_seconds)
         self._last_latency_ms = 0
         self._latency_lock = threading.Lock()
