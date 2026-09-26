@@ -154,6 +154,8 @@ from promotion_readiness import (
 )
 from rule_engine import RuleEngine, RulePackError
 from update_center import RollbackError, UpdateCenter, UpdateError
+from shadow_action_card import build_shadow_action_card
+from shadow_loop import ShadowDecisionStore
 
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(message)s")
@@ -15332,6 +15334,26 @@ def build_action_center() -> dict[str, Any]:
     }
 
 
+def build_commerce_shadow_cards() -> dict[str, Any]:
+    """Return local MVP shadow cards without exposing execution primitives."""
+    store = ShadowDecisionStore(DATA_DIR.parent)
+    records = store.list()
+    cards = [build_shadow_action_card(item) for item in records[:50]]
+    return {
+        "schema_version": 1,
+        "mode": "shadow_only",
+        "cards": cards,
+        "summary": {
+            "total": len(cards),
+            "pending": sum(1 for card in cards if not card.get("human_action")),
+            "confirmed": sum(1 for card in cards if (card.get("human_action") or {}).get("action") == "confirmed"),
+            "ignored": sum(1 for card in cards if (card.get("human_action") or {}).get("action") == "ignored"),
+        },
+        "platform_write_attempted": False,
+        "can_execute": False,
+    }
+
+
 def build_stop_loss_queue(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """Turn plan diagnostics into a ranked, operator-friendly loss-control queue."""
 
@@ -17298,6 +17320,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/actions/effectiveness":
             self._json(build_execution_effectiveness_report())
             return
+        if path == "/commerce/shadow-cards":
+            self._json(build_commerce_shadow_cards())
+            return
         if path == "/product/capability":
             self._json(build_product_capability_diagnostic(
                 onboarding=build_onboarding_status(),
@@ -18194,6 +18219,45 @@ class Handler(BaseHTTPRequestHandler):
                 marker = mark_action_manually_applied(str(payload.get("action_id") or ""))
                 _invalidate_cache()
                 self._json({"ok": True, "marker": marker, "executed_by_plugin": False, "execution_enabled": False})
+                return
+            if path == "/commerce/shadow-cards/human-action":
+                shadow_id = str(payload.get("shadow_id") or "").strip()
+                action = str(payload.get("action") or "").strip()
+                reason = str(payload.get("reason") or "").strip()
+                if not shadow_id or action not in {"confirmed", "ignored"}:
+                    raise ValueError("影子 Action Card 人工反馈无效。")
+                record = ShadowDecisionStore(DATA_DIR.parent).update_human_action(
+                    shadow_id,
+                    action,
+                    reason,
+                )
+                self._json({
+                    "ok": True,
+                    "record": build_shadow_action_card(record),
+                    "platform_write_attempted": False,
+                    "can_execute": False,
+                })
+                return
+            if path == "/commerce/shadow-cards/outcome":
+                shadow_id = str(payload.get("shadow_id") or "").strip()
+                horizon = str(payload.get("horizon") or "").strip()
+                source = str(payload.get("source") or "").strip()
+                metrics_after = payload.get("metrics_after")
+                if not shadow_id or not isinstance(metrics_after, dict):
+                    raise ValueError("影子 Outcome 参数无效。")
+                record = ShadowDecisionStore(DATA_DIR.parent).add_outcome(
+                    shadow_id,
+                    horizon=horizon,
+                    metrics_after=metrics_after,
+                    source=source,
+                )
+                self._json({
+                    "ok": True,
+                    "record": build_shadow_action_card(record),
+                    "outcome": record.get("outcome"),
+                    "platform_write_attempted": False,
+                    "can_execute": False,
+                })
                 return
             if path == "/actions/preflight/start":
                 report = start_execution_preflight(str(payload.get("action_id") or ""))

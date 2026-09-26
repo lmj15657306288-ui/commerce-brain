@@ -7745,6 +7745,84 @@ function renderShadowExecution(report = {}) {
   }));
 }
 
+function renderCommerceShadowCards(report = {}) {
+  const cards = Array.isArray(report.cards) ? report.cards : [];
+  const summary = report.summary || {};
+  const count = document.getElementById("commerce-shadow-card-count");
+  const container = document.getElementById("commerce-shadow-cards");
+  if (!count || !container) return;
+  count.textContent = `${cards.length} 项`;
+  renderMetricStrip("commerce-shadow-card-summary", {
+    待反馈: summary.pending || 0,
+    已确认: summary.confirmed || 0,
+    已忽略: summary.ignored || 0,
+  });
+  if (!cards.length) return empty(container, "暂无本机影子建议。");
+  container.className = "stack";
+  const labels = { low: "低风险", high: "高风险" };
+  container.replaceChildren(...cards.slice(0, 10).map((item) => {
+    const card = document.createElement("article");
+    card.className = `shadow-card${item.risk_level === "high" ? " attention" : ""}`;
+    const header = document.createElement("header");
+    const title = document.createElement("strong");
+    title.textContent = item.recommendation || "人工复核";
+    const risk = document.createElement("span");
+    risk.className = "shadow-status";
+    risk.textContent = labels[item.risk_level] || "待评估";
+    header.append(title, risk);
+    const problem = document.createElement("p");
+    problem.className = "shadow-detail";
+    problem.textContent = `当前问题：${item.problem || "暂无明确问题"}`;
+    const metrics = document.createElement("p");
+    metrics.className = "shadow-change";
+    metrics.textContent = Object.entries(item.metrics || {})
+      .map(([key, value]) => `${key} ${value == null ? "--" : value}`)
+      .join(" · ") || "核心指标待补齐";
+    const observe = document.createElement("p");
+    observe.className = "shadow-detail";
+    observe.textContent = `建议观察 ${item.observe_minutes || "--"} 分钟 · 证据 ${String(item.evidence_hash || "").slice(0, 12) || "--"}`;
+    const footer = document.createElement("footer");
+    const human = item.human_action || {};
+    if (human.action) {
+      const state = document.createElement("span");
+      state.className = "shadow-status";
+      state.textContent = human.action === "confirmed" ? "已记录采纳" : "已记录忽略";
+      footer.append(state);
+    } else {
+      for (const [action, text] of [["confirmed", "确认已处理"], ["ignored", "忽略"]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        button.className = action === "confirmed" ? "primary" : "";
+        markAgentWriteControl(button);
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const reason = window.prompt(action === "confirmed" ? "可选：记录人工处理说明" : "可选：记录忽略理由", "") || "";
+            await bridgeFetch("/commerce/shadow-cards/human-action", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Dian-Agent": "2" },
+              body: JSON.stringify({ shadow_id: item.shadow_id, action, reason }),
+            });
+            await refreshCommerceShadowCards();
+          } catch (error) {
+            button.disabled = false;
+            button.textContent = error.message || "记录失败";
+          }
+        });
+        footer.append(button);
+      }
+    }
+    card.append(header, problem, metrics, observe, footer);
+    return card;
+  }));
+}
+
+async function refreshCommerceShadowCards() {
+  const report = await bridgeFetch("/commerce/shadow-cards");
+  renderCommerceShadowCards(report);
+}
+
 async function refreshShadowExecution() {
   const report = await bridgeFetch("/actions/shadow");
   renderShadowExecution(report);
@@ -8376,7 +8454,7 @@ async function loadDashboardOnce() {
   }
 
   const [
-    insightsR, actionCenterR, settingsR, opsR, extensionR, trendsR, accountsR, contextR, onboardingR, healthR, effectivenessR, readinessR, stopLossR, strategySimulationR, preflightR, shadowR, executionEffectivenessR, valueLedgerR, integrationsR, oceanengineR, oceanengineSyncR, oceanengineAccountCenterR, connectionGuideR, promotionReadinessR, a2PilotR, productionWriteR, controlTasksR, scheduleControlR, promotionPlanConsoleR, promotionOperationAuditR
+    insightsR, actionCenterR, settingsR, opsR, extensionR, trendsR, accountsR, contextR, onboardingR, healthR, effectivenessR, readinessR, stopLossR, strategySimulationR, preflightR, shadowR, executionEffectivenessR, valueLedgerR, integrationsR, oceanengineR, oceanengineSyncR, oceanengineAccountCenterR, connectionGuideR, promotionReadinessR, a2PilotR, productionWriteR, controlTasksR, scheduleControlR, promotionPlanConsoleR, promotionOperationAuditR, commerceShadowCardsR
   ] = await runDashboardReadPool([
     () => dashboardRead("/insights", loadGeneration),
     () => dashboardRead("/action-center", loadGeneration),
@@ -8408,6 +8486,7 @@ async function loadDashboardOnce() {
     () => dashboardRead("/chengfang/schedule-control", loadGeneration),
     () => dashboardRead("/qianchuan/plan-console", loadGeneration),
     () => dashboardRead("/actions/audit?limit=500", loadGeneration),
+    () => dashboardRead("/commerce/shadow-cards", loadGeneration),
   ]);
 
   // A newer refresh may finish before this request group. Never let an old
@@ -8499,6 +8578,9 @@ async function loadDashboardOnce() {
   const promotionOperationAudit = val(promotionOperationAuditR, {
     actions: [], execution_enabled: false, summary: {},
     updated_at: "操作日志暂时无法读取",
+  });
+  const commerceShadowCards = val(commerceShadowCardsR, {
+    cards: [], summary: {}, mode: "shadow_only",
   });
   const extensionDashboard = extensionResponse?.dashboard || {};
   const qianchuanScope = reconcileQianchuanScope(accounts, { available: accountsR.status === "fulfilled" });
@@ -8611,6 +8693,9 @@ async function loadDashboardOnce() {
   renderStrategySimulation(strategySimulation);
   renderExecutionPreflight(preflight);
   renderShadowExecution(shadow);
+  if (typeof renderCommerceShadowCards === "function") {
+    renderCommerceShadowCards(commerceShadowCards);
+  }
   renderExecutionEffectiveness(executionEffectiveness);
   renderValueLedger(valueLedger);
   if (promotionReadiness) renderChengfangReadiness(promotionReadiness);
