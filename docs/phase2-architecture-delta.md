@@ -224,4 +224,6 @@ Step 3 已完成：`bridge/laya_client.py` 只负责 loopback HTTP、Bearer head
 
 Step 4 已完成：`LayaProvider` 通过客户端调用真实 `/v1/systemone`，只映射到有限 action space，并对非法 action、低置信度、超时、离线和协议错误回退到真实标记的 Rules metadata。新增动作只有 `ESCALATE_SLOW_BRAIN`；29 项 Step 4 相关测试和一次真实 provider 集成调用通过。下一步进入 Step 5，建立 Laya fixture benchmark。
 
-Step 5 已完成：10 组 synthetic fixtures、100/1000 warm requests 和独立 cold start 均已运行。1000 次 service success/schema-valid 均为 100%，fallback 为 0%，p50 225.71ms、p95 263.23ms、p99 269.17ms；benchmark 明确不作业务准确率声明。详见 `docs/laya-local-benchmark.md`。下一步进入 Step 6，暴露现有 MCP 层的 Fast Brain 工具。
+Step 5 已完成：10 组 synthetic fixtures、100/1000 warm requests 和独立 cold start 均已运行。1000 次 service success/schema-valid 均为 100%，fallback 为 0%，p50 225.71ms、p95 263.23ms、p99 269.17ms；benchmark 明确不作业务准确率声明。详见 `docs/laya-local-benchmark.md`。
+
+Step 6 已完成：现有 MCP server 增量暴露 5 个 Fast Brain proposal-only 工具。工具只接受有界脱敏状态或 `LiveStateSnapshot` fixture，provider 失败时 fail closed，所有响应强制 `execution_allowed=false`、`can_execute=false`、`execution_performed=false`。`test_mcp_fast_tools`、`test_mcp_ai_tools`、`test_decision_provider`、`test_live_state` 共 `25/25` 通过，详见 `docs/mcp-fast-tools.md`。下一步进入 Step 7，建立 Hermes SlowTask 合同和最小角色边界。

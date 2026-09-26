@@ -37,4 +37,4 @@ cd /Users/linmengjiang/Projects/commerce-brain/bridge
 ../.venv/bin/python -m unittest test_live_state test_decision_provider
 ```
 
-结果：`6/6` 通过；Step 6 相关组合测试 `20/20` 通过。
+结果：`6/6` 通过；Fast Brain MCP 与 provider 相关组合测试 `25/25` 通过，详见 `docs/mcp-fast-tools.md`。

@@ -55,6 +55,7 @@ from http_receiver import (
     save_agent_settings,
     update_task_state,
 )
+from mcp_fast_tools import FAST_TOOL_NAMES, FastToolInputError, TOOL_DEFINITIONS, invoke_fast_tool
 
 # These optional wrappers are the only integration seam between MCP and the AI
 # subsystem.  Their contract is deliberately proposal-only: build a sanitized
@@ -306,10 +307,13 @@ TOOLS = [
 # public surface narrower than the local HTTP/UI surface: raw snapshots,
 # reports, settings and task mutation tools remain local implementation
 # details and cannot be reached by guessing an unlisted tool name.
+TOOLS = [*TOOLS, *[Tool(**definition) for definition in TOOL_DEFINITIONS]]
+
 AI_SAFE_TOOL_NAMES = frozenset({
     "get_ai_context_pack",
     "submit_ai_proposal",
     "get_ai_proposals",
+    *FAST_TOOL_NAMES,
 })
 _LEGACY_LOCAL_TOOLS = tuple(TOOLS)
 TOOLS = [tool for tool in _LEGACY_LOCAL_TOOLS if tool.name in AI_SAFE_TOOL_NAMES]
@@ -383,6 +387,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "message": "外部 AI 只能读取脱敏经营上下文并提交不可执行提案。",
             },
         }))
+    if name in FAST_TOOL_NAMES:
+        try:
+            result = invoke_fast_tool(name, arguments)
+        except FastToolInputError:
+            return _text(_ai_proposal_only_response({
+                "ok": False,
+                "error": {
+                    "code": "FAST_INPUT_REJECTED",
+                    "message": "Fast Brain 输入未通过本地边界校验，未调用执行能力。",
+                },
+            }))
+        except Exception:
+            return _text(_ai_proposal_only_response({
+                "ok": False,
+                "error": {
+                    "code": "FAST_BRAIN_UNAVAILABLE",
+                    "message": "Fast Brain 本地 provider 暂不可用，未生成可执行动作。",
+                },
+            }))
+        return _text(_ai_proposal_only_response(result))
     if name in {"get_doudian_data", "get_qianchuan_data"}:
         source = "doudian" if name == "get_doudian_data" else "qianchuan"
         page_type = str(arguments.get("page_type") or "") or None

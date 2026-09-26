@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from mcp_fast_tools import FAST_TOOL_NAMES
 
 
 def _call(name: str, arguments: dict | None = None) -> dict:
@@ -17,7 +18,7 @@ class MCPAIToolTests(unittest.TestCase):
     def test_only_proposal_level_ai_tools_are_exposed(self) -> None:
         names = {tool.name for tool in server.TOOLS}
         self.assertEqual(
-            {"get_ai_context_pack", "submit_ai_proposal", "get_ai_proposals"},
+            {"get_ai_context_pack", "submit_ai_proposal", "get_ai_proposals"} | set(FAST_TOOL_NAMES),
             names,
         )
         for forbidden in (
