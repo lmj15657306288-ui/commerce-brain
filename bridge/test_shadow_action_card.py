@@ -21,6 +21,15 @@ class ShadowActionCardTests(unittest.TestCase):
         self.assertFalse(card["can_execute"])
         self.assertFalse(card["platform_write_attempted"])
 
+    def test_slow_brain_card_has_safe_label(self):
+        card = build_shadow_action_card({
+            "shadow_id": "shadow-1",
+            "snapshot": {"metrics": {}},
+            "decision_proposal": {"action": "ESCALATE_SLOW_BRAIN"},
+        })
+        self.assertEqual("请求慢分析", card["recommendation"])
+        self.assertFalse(card["can_execute"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,6 +95,11 @@ class CommerceContractTests(unittest.TestCase):
         errors = validate_proposal_safety(proposal, current_snapshot=self.snapshot(), now=self.NOW)
         self.assertIn("ILLEGAL_ACTION", {item["code"] for item in errors})
 
+    def test_slow_brain_escalation_is_proposal_only(self):
+        proposal = self.proposal(action="ESCALATE_SLOW_BRAIN")
+        self.assertEqual("ESCALATE_SLOW_BRAIN", proposal.action)
+        self.assertFalse(proposal.can_execute)
+
     def test_action_request_is_non_executable(self):
         request = ActionRequestV1.from_proposal(self.proposal(), action_id="action-001")
         self.assertEqual(1, request.schema_version)

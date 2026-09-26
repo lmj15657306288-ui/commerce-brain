@@ -15,6 +15,7 @@ def build_shadow_action_card(record: Mapping[str, Any]) -> dict[str, Any]:
         "PROMPT_HOST": "提醒主播",
         "CHECK_PRODUCT": "检查商品",
         "CHECK_CAMPAIGN": "检查投放",
+        "ESCALATE_SLOW_BRAIN": "请求慢分析",
     }
     risk = "high" if action in {"CHECK_PRODUCT", "CHECK_CAMPAIGN"} else "low"
     return {

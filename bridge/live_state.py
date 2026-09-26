@@ -20,7 +20,15 @@ LIVE_METRICS = (
     "ad_spend",
     "roi",
 )
-LIVE_ACTIONS = frozenset({"OBSERVE", "PROMPT_HOST", "CHECK_PRODUCT", "CHECK_CAMPAIGN"})
+LIVE_ACTIONS = frozenset(
+    {
+        "OBSERVE",
+        "PROMPT_HOST",
+        "CHECK_PRODUCT",
+        "CHECK_CAMPAIGN",
+        "ESCALATE_SLOW_BRAIN",
+    }
+)
 
 
 class LiveStateAdapter(Protocol):

@@ -128,6 +128,27 @@ Commerce Brain 必须在本地把 `answers` 映射到有限 action space，再�
 - MPS 可用，推理返回有限 choice `CHECK_PRODUCT`
 - 监听地址为 `127.0.0.1:8765`
 - `bridge/laya_client.py` 已通过 7/7 单测，并完成一次真实服务调用
+- `LayaProvider` 已完成一次真实映射调用，结果为有限 action `CHECK_PRODUCT`，metadata 标记为 `provider=laya`、`checkpoint=typed-decisions`
+
+## Commerce Brain Adapter
+
+`bridge/decision_provider.py` 只向 Laya发送归一化 scalar features 和三类 typed questions：
+
+- `next_action`：有限 choice
+- `actionable`：binary / noul
+- `priority`：有限 score
+
+Laya 结果必须通过本地 action-space、confidence 和 `validate_decision_result` 校验。任何失败都回退：
+
+```json
+{
+  "provider": "rules",
+  "model": "deterministic-rules-v1",
+  "checkpoint": "fallback_from_laya"
+}
+```
+
+这条回退路径不伪装成 Laya 成功，也不开放平台写动作。
 
 当前服务以受控前台进程验证；LaunchAgent、启动/停止脚本属于后续 Step 13，尚未宣称完成。
 
