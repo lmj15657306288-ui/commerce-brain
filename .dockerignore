@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+bridge/data
+bridge/backup
+bridge/logs
+bridge/browser_runtime
+bridge/test_browser_runtime.py
+bridge/test_browser_safety.py
+docs
+deploy/secrets
+*.sqlite3

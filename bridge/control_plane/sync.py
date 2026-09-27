@@ -11,7 +11,12 @@ from .clock import Clock, iso_now
 from .errors import ControlPlaneError, conflict, scope_denied, validation
 from .event_store import EventStore, StoredEvent
 from .repositories import RecordRepository
-from .services import DeviceSessionService, ServiceBase
+from .services import (
+    DeviceSessionService,
+    ServiceBase,
+    publish_after_commit,
+    transactional_mutation,
+)
 from .websocket import EventBroker
 
 
@@ -38,12 +43,14 @@ class SyncService(ServiceBase):
         except Exception:
             return False
 
+    @transactional_mutation
     def sync(
         self,
         identity: RequestIdentity,
         *,
         device_id: str,
         actor_id: str,
+        idempotency_key: str,
         last_ack_cursor: int,
         client_time: str,
         events: list[dict[str, Any]],
@@ -72,6 +79,22 @@ class SyncService(ServiceBase):
         latest = self.events.latest_cursor
         if last_ack_cursor > latest:
             raise conflict("last_ack_cursor is ahead of server history", code="STALE_CURSOR")
+        payload = {
+            "device_id": device_id,
+            "actor_id": actor_id,
+            "last_ack_cursor": last_ack_cursor,
+            "client_time": client_time,
+            "events": events,
+            "capabilities": capabilities,
+            "session_info": session_info,
+        }
+        cached_result = self.idempotency.reserve_or_replay(
+            kind="sync.batch",
+            key=idempotency_key,
+            payload=payload,
+        )
+        if cached_result is not None:
+            return dict(cached_result)
         acknowledged: list[str] = []
         received_events: list[StoredEvent] = []
         for raw in events:
@@ -93,7 +116,7 @@ class SyncService(ServiceBase):
             received_events.append(stored)
             acknowledged.append(event.event_id)
             if not replayed:
-                self.broker.publish_nowait(stored)
+                publish_after_commit(self.broker, self.events, stored)
                 self._append_audit(
                     identity,
                     actor,
@@ -114,7 +137,7 @@ class SyncService(ServiceBase):
                 session,
                 indexes={"organization_id": device["organization_id"], "actor_id": device.get("user_id")},
             )
-        return {
+        result = {
             "server_time": iso_now(self.clock),
             "latest_cursor": self.events.latest_cursor,
             "events_after_cursor": [item.as_dict() for item in replay],
@@ -127,7 +150,15 @@ class SyncService(ServiceBase):
             "session_info_present": bool(session_info),
             "can_execute": False,
         }
+        self.idempotency.save_result(
+            kind="sync.batch",
+            key=idempotency_key,
+            payload=payload,
+            result=result,
+        )
+        return result
 
+    @transactional_mutation
     def ingest_event(
         self,
         identity: RequestIdentity,
@@ -148,7 +179,7 @@ class SyncService(ServiceBase):
         actor = self._actor(identity)
         stored, replayed = self.events.append(event)
         if not replayed:
-            self.broker.publish_nowait(stored)
+            publish_after_commit(self.broker, self.events, stored)
             self._append_audit(
                 identity,
                 actor,

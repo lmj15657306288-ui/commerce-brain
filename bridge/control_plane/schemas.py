@@ -131,6 +131,7 @@ class LeaseReleaseRequest(StrictModel):
 class SyncRequest(StrictModel):
     device_id: str
     actor_id: str
+    idempotency_key: str = Field(min_length=1, max_length=128)
     last_ack_cursor: int = Field(default=0, ge=0)
     client_time: str
     events: list[dict[str, Any]] = Field(default_factory=list, max_length=100)

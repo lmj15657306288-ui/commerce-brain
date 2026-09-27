@@ -10,17 +10,20 @@ from typing import Any
 from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import psycopg
 from starlette.websockets import WebSocketState
 
 from core.context_registry import ContextRegistry
 from core.contracts import ContractValidationError, ScopeV1
-from core.persistence import InMemoryPersistenceAdapter, PersistenceAdapter
+from core.persistence import InMemoryPersistenceAdapter, PersistenceAdapter, PersistenceError
 
 from .auth import AuthProvider, FailClosedAuthProvider, RequestIdentity
 from .clock import Clock, SystemClock
-from .errors import ControlPlaneError, validation
+from .errors import ControlPlaneError, database_unavailable, validation
 from .event_store import EventStore
 from .repositories import IdempotencyRepository
+from .redis_layer import NoopEphemeralLayer
 from .schemas import (
     AlertCreateRequest,
     ApprovalCreateRequest,
@@ -70,6 +73,7 @@ class ControlPlane:
     workers: WorkerService
     leases: LeaseService
     sync: SyncService
+    ephemeral: Any
 
     @classmethod
     def build(
@@ -80,11 +84,13 @@ class ControlPlane:
         auth_provider: AuthProvider | None = None,
         clock: Clock | None = None,
         broker: EventBroker | None = None,
+        ephemeral: Any | None = None,
     ) -> "ControlPlane":
         selected_adapter = adapter or InMemoryPersistenceAdapter()
         selected_registry = registry or ContextRegistry(selected_adapter)
         selected_clock = clock or SystemClock()
-        selected_broker = broker or EventBroker()
+        selected_ephemeral = ephemeral or NoopEphemeralLayer()
+        selected_broker = broker or EventBroker(ephemeral=selected_ephemeral)
         events = EventStore(selected_adapter)
         idempotency = IdempotencyRepository(selected_adapter)
         common = {
@@ -111,6 +117,7 @@ class ControlPlane:
             workers=WorkerService(**common),
             leases=LeaseService(**common),
             sync=SyncService(device_sessions=devices, **common),
+            ephemeral=selected_ephemeral,
         )
 
 
@@ -150,6 +157,10 @@ def create_app(
     auth_provider: AuthProvider | None = None,
     clock: Clock | None = None,
     broker: EventBroker | None = None,
+    ephemeral: Any | None = None,
+    allowed_origins: list[str] | None = None,
+    rate_limit_enabled: bool = False,
+    rate_limit_per_minute: int = 120,
 ) -> FastAPI:
     control = ControlPlane.build(
         adapter=adapter,
@@ -157,13 +168,57 @@ def create_app(
         auth_provider=auth_provider,
         clock=clock,
         broker=broker,
+        ephemeral=ephemeral,
     )
     app = FastAPI(title="Commerce Brain Central Control Plane", version="0.1.0")
     app.state.control_plane = control
+    normalized_origins = [
+        origin.strip()
+        for origin in (allowed_origins or [])
+        if origin.strip() and origin.strip() != "*"
+    ]
+    if normalized_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=normalized_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        )
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         request.state.request_id = _request_id(request)
+        if rate_limit_enabled and request.url.path not in {"/health", "/readiness"}:
+            limited_paths = (
+                request.url.path == "/sync"
+                or request.url.path == "/events"
+                or request.url.path.startswith("/tasks")
+                or request.url.path.startswith("/alerts")
+                or request.url.path.startswith("/approvals")
+                or request.url.path.startswith("/devices")
+                or request.url.path.startswith("/workers")
+                or request.url.path.startswith("/leases")
+            )
+            if limited_paths:
+                client_host = request.client.host if request.client else "unknown"
+                allowed = control.ephemeral.allow_rate(
+                    f"{client_host}:{request.method}:{request.url.path}",
+                    limit=rate_limit_per_minute,
+                    window_seconds=60,
+                )
+                if not allowed:
+                    response = JSONResponse(
+                        status_code=429,
+                        content={
+                            "error_code": "RATE_LIMITED",
+                            "message": "request rate limit exceeded",
+                            "request_id": request.state.request_id,
+                            "details": None,
+                        },
+                    )
+                    response.headers["X-Request-ID"] = request.state.request_id
+                    return response
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         return response
@@ -189,6 +244,14 @@ def create_app(
     async def request_validation_handler(request: Request, exc: RequestValidationError):
         error = validation("request validation failed", details={"fields": exc.errors()})
         return await control_plane_error_handler(request, error)
+
+    @app.exception_handler(PersistenceError)
+    async def persistence_error_handler(request: Request, exc: PersistenceError):
+        return await control_plane_error_handler(request, database_unavailable())
+
+    @app.exception_handler(psycopg.Error)
+    async def postgres_error_handler(request: Request, exc: psycopg.Error):
+        return await control_plane_error_handler(request, database_unavailable())
 
     def cp(request: Request) -> ControlPlane:
         return request.app.state.control_plane
@@ -223,15 +286,58 @@ def create_app(
 
     @app.get("/health")
     async def health(service: ControlPlane = Depends(cp)):
+        database_ok = getattr(service.adapter, "health_check", lambda: True)()
+        redis_ok = service.ephemeral.health_check()
+        schema_version = service.adapter.schema_version if database_ok else None
+        supported_schema_version = getattr(
+            service.adapter,
+            "MIGRATION_VERSION",
+            schema_version,
+        )
+        migration_ok = schema_version == supported_schema_version
         return {
-            "status": "ok",
+            "status": "ok" if database_ok and migration_ok else "degraded",
             "service": "control_plane",
-            "latest_cursor": service.events.latest_cursor,
+            "latest_cursor": service.events.latest_cursor if database_ok else None,
             "execution_enabled": False,
             "websocket_is_source_of_truth": False,
             "event_store_is_recovery_source": True,
+            "dependencies": {
+                "postgresql_or_local_adapter": "ok" if database_ok else "unhealthy",
+                "migration": "current" if migration_ok else "outdated",
+                "schema_version": schema_version,
+                "redis": "ok" if redis_ok else "degraded",
+                "auth_configured": bool(getattr(service.auth_provider, "configured", False)),
+            },
         }
 
+    @app.get("/readiness")
+    async def readiness(service: ControlPlane = Depends(cp)):
+        database_ok = getattr(service.adapter, "health_check", lambda: True)()
+        redis_ok = service.ephemeral.health_check()
+        auth_configured = bool(getattr(service.auth_provider, "configured", False))
+        schema_version = service.adapter.schema_version if database_ok else None
+        supported_schema_version = getattr(
+            service.adapter,
+            "MIGRATION_VERSION",
+            schema_version,
+        )
+        migration_ok = schema_version == supported_schema_version
+        ready = database_ok and migration_ok and auth_configured
+        body = {
+            "ready": ready,
+            "status": "ready" if ready else "unhealthy",
+            "dependencies": {
+                "postgresql_or_local_adapter": "ok" if database_ok else "unhealthy",
+                "migration": "current" if migration_ok else "outdated",
+                "schema_version": schema_version,
+                "redis": "ok" if redis_ok else "degraded",
+                "auth": "configured" if auth_configured else "not_configured",
+            },
+            "redis_is_optional_for_truth": True,
+            "execution_enabled": False,
+        }
+        return JSONResponse(status_code=200 if ready else 503, content=body)
     @app.get("/context/shops/{shop_id}")
     async def get_shop(
         shop_id: str,
@@ -613,6 +719,7 @@ def create_app(
             current,
             device_id=body.device_id,
             actor_id=body.actor_id,
+            idempotency_key=body.idempotency_key,
             last_ack_cursor=body.last_ack_cursor,
             client_time=body.client_time,
             events=body.events,
@@ -653,6 +760,10 @@ def create_app(
     @app.websocket("/ws/events")
     async def websocket_events(websocket: WebSocket):
         service: ControlPlane = websocket.app.state.control_plane
+        origin = websocket.headers.get("origin")
+        if origin and origin not in normalized_origins:
+            await websocket.close(code=4403, reason="ORIGIN_DENIED")
+            return
         current = service.auth_provider.authenticate_websocket(websocket)
         if not current.authenticated:
             await websocket.close(code=4401, reason="UNAUTHENTICATED")

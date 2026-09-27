@@ -1,0 +1,111 @@
+services:
+  control-plane:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: commerce-brain-control-plane:${APP_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public_key
+      CONTROL_PLANE_ENV: ${CONTROL_PLANE_ENV:-local-production}
+      JWT_ISSUER: ${JWT_ISSUER:?set JWT_ISSUER in deploy/.env}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:?set JWT_AUDIENCE in deploy/.env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      APP_VERSION: ${APP_VERSION:-dev}
+      GIT_SHA: ${GIT_SHA:-unknown}
+      POSTGRES_POOL_MIN: ${POSTGRES_POOL_MIN:-2}
+      POSTGRES_POOL_MAX: ${POSTGRES_POOL_MAX:-10}
+    secrets:
+      - jwt_public_key
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - control_plane_private
+      - edge
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-commerce_brain}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - control_plane_private
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    networks:
+      - control_plane_private
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  reverse-proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - edge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  control_plane_private:
+    internal: true
+  edge:
+
+secrets:
+  jwt_public_key:
+    file: ./secrets/jwt_public_key.pem

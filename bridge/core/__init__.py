@@ -56,6 +56,7 @@ from .persistence import (
     PersistenceError,
     SQLitePersistenceAdapter,
 )
+from .postgres_persistence import PostgresPersistenceAdapter
 
 __all__ = [
     "ACTOR_TYPES",
@@ -108,4 +109,5 @@ __all__ = [
     "PersistenceConflict",
     "PersistenceError",
     "SQLitePersistenceAdapter",
+    "PostgresPersistenceAdapter",
 ]

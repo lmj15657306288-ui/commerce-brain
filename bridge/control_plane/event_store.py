@@ -7,7 +7,7 @@ from threading import RLock
 from typing import Callable
 
 from core.contracts import EventEnvelopeV1, ScopeV1
-from core.persistence import PersistenceAdapter
+from core.persistence import PersistenceAdapter, PersistenceConflict
 
 from .errors import conflict
 from .repositories import RecordRepository
@@ -47,11 +47,31 @@ class EventStore:
 
     @property
     def latest_cursor(self) -> int:
+        latest_event_cursor = getattr(self._records.adapter, "latest_event_cursor", None)
+        if latest_event_cursor is not None:
+            return int(latest_event_cursor())
         with self._lock:
             events = self._all()
             return events[-1].cursor if events else 0
 
     def append(self, event: EventEnvelopeV1) -> tuple[StoredEvent, bool]:
+        append_event = getattr(self._records.adapter, "append_event", None)
+        if append_event is not None:
+            try:
+                cursor, replayed = append_event(
+                    event=event.as_dict(),
+                    event_id=event.event_id,
+                    idempotency_key=event.idempotency_key,
+                    scope=event.scope.as_dict(),
+                    occurred_at=event.occurred_at,
+                    received_at=event.received_at,
+                )
+            except PersistenceConflict as exc:
+                raise conflict(
+                    str(exc),
+                    code="IDEMPOTENCY_CONFLICT",
+                ) from exc
+            return StoredEvent(cursor, event), replayed
         with self._lock:
             for stored in self._all():
                 if stored.event.idempotency_key == event.idempotency_key:
@@ -86,6 +106,37 @@ class EventStore:
             raise conflict("cursor must be a non-negative integer", code="STALE_CURSOR")
         if not isinstance(limit, int) or not 1 <= limit <= 500:
             raise conflict("event limit must be between 1 and 500", code="VALIDATION_ERROR")
+        list_event_records_after = getattr(
+            self._records.adapter,
+            "list_event_records_after",
+            None,
+        )
+        if list_event_records_after is not None:
+            output: list[StoredEvent] = []
+            scan_cursor = cursor
+            while len(output) < limit:
+                batch_limit = min(500, max(limit - len(output), 100))
+                raw_events = list_event_records_after(
+                    scan_cursor,
+                    limit=batch_limit,
+                    scope=None if scope is None else scope.as_dict(),
+                )
+                if not raw_events:
+                    break
+                for raw in raw_events:
+                    stored = StoredEvent(
+                        int(raw["cursor"]),
+                        EventEnvelopeV1.from_mapping(raw["event"]),
+                    )
+                    scan_cursor = stored.cursor
+                    if visible is not None and not visible(stored.event):
+                        continue
+                    output.append(stored)
+                    if len(output) >= limit:
+                        break
+                if len(raw_events) < batch_limit:
+                    break
+            return output
         with self._lock:
             latest = self.latest_cursor
             if cursor > latest:

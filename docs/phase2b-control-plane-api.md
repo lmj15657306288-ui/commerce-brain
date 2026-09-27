@@ -350,6 +350,7 @@ idempotency_key、cursor 防止业务副作用重复发生。
 ```text
 device_id
 actor_id
+idempotency_key
 last_ack_cursor
 client_time
 events[]

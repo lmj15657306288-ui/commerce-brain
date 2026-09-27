@@ -1,0 +1,8 @@
+services:
+  control-plane:
+    ports:
+      - "127.0.0.1:18000:8000"
+
+  reverse-proxy:
+    profiles:
+      - proxy

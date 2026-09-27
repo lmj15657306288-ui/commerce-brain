@@ -74,6 +74,8 @@ class PersistenceAdapter(Protocol):
         channel_id: str | None,
     ) -> dict[str, Any] | None: ...
 
+    def lock_transaction_key(self, namespace: str, key: str) -> None: ...
+
     @contextmanager
     def transaction(self) -> Iterator["PersistenceAdapter"]: ...
 
@@ -463,6 +465,10 @@ class SQLitePersistenceAdapter:
         )
         return result
 
+    def lock_transaction_key(self, namespace: str, key: str) -> None:
+        if self._transaction_depth == 0:
+            raise PersistenceError("transaction lock requires an active transaction")
+
     def close(self) -> None:
         with self._lock:
             self._connection.close()
@@ -543,6 +549,10 @@ class InMemoryPersistenceAdapter:
         result = copy.deepcopy(item["value"])
         result["internal_entity_type"], result["internal_entity_id"] = item["identity"]
         return result
+
+    def lock_transaction_key(self, namespace: str, key: str) -> None:
+        if not self._snapshots:
+            raise PersistenceError("transaction lock requires an active transaction")
 
     def close(self) -> None:
         return None

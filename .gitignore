@@ -11,6 +11,9 @@ reports/
 .env
 .env.*
 !.env.marketplace.example
+!deploy/.env.example
+deploy/secrets/*
+!deploy/secrets/.gitkeep
 
 # Private extension signing material and generated packages
 *.pem

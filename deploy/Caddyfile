@@ -1,0 +1,4 @@
+{$PUBLIC_DOMAIN:localhost} {
+    encode gzip
+    reverse_proxy control-plane:8000
+}

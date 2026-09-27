@@ -5,6 +5,7 @@ import unittest
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -26,7 +27,11 @@ from core.contracts import (
     ShopCategoryMembershipV1,
     ShopRecordV1,
 )
-from core.persistence import InMemoryPersistenceAdapter, SQLitePersistenceAdapter
+from core.persistence import (
+    InMemoryPersistenceAdapter,
+    PersistenceError,
+    SQLitePersistenceAdapter,
+)
 
 
 ORG = "org_demo"
@@ -250,6 +255,33 @@ class ControlPlaneApiTests(unittest.TestCase):
         self.assertEqual(409, conflict.status_code)
         self.assertEqual("IDEMPOTENCY_CONFLICT", conflict.json()["error_code"])
 
+    def test_task_mutation_rolls_back_when_late_persistence_write_fails(self) -> None:
+        control = self.fixture.app.state.control_plane
+        before_cursor = control.events.latest_cursor
+        with mock.patch.object(
+            control.idempotency,
+            "save_result",
+            side_effect=PersistenceError("simulated persistence failure"),
+        ):
+            with self.assertRaises(PersistenceError):
+                control.tasks.create(
+                    self.fixture.identities["owner"],
+                    scope=ScopeV1.create(
+                        organization_id=ORG,
+                        shop_id=SHOP_A,
+                    ),
+                    task_type="atomicity_test",
+                    priority=1,
+                    owner=None,
+                    due_at=None,
+                    business_impact=None,
+                    source_refs=[],
+                    idempotency_key="idem_atomic_rollback",
+                )
+
+        self.assertEqual([], self.fixture.adapter.list_records("cp_tasks"))
+        self.assertEqual(before_cursor, control.events.latest_cursor)
+
     def test_idempotent_replay_still_requires_auth_and_capability(self) -> None:
         payload = {
             "scope": {"organization_id": ORG, "shop_id": SHOP_A},
@@ -443,6 +475,7 @@ class ControlPlaneRecoveryTests(unittest.TestCase):
         request = {
             "device_id": "device_edge",
             "actor_id": "actor_owner",
+            "idempotency_key": "idem_sync_batch_one",
             "last_ack_cursor": 0,
             "client_time": "2030-01-01T00:00:00+00:00",
             "events": [event],
@@ -453,6 +486,13 @@ class ControlPlaneRecoveryTests(unittest.TestCase):
         self.assertEqual(200, first.status_code)
         self.assertEqual(cursor, second.json()["latest_cursor"])
         self.assertEqual(1, len(second.json()["received_event_cursors"]))
+        conflict = self.fixture.client.post(
+            "/sync",
+            json={**request, "client_time": "2030-01-01T00:00:01+00:00"},
+            headers=self.fixture.headers(),
+        )
+        self.assertEqual(409, conflict.status_code)
+        self.assertEqual("IDEMPOTENCY_CONFLICT", conflict.json()["error_code"])
         replay = self.fixture.client.get("/events?cursor=0", headers=self.fixture.headers())
         self.assertTrue(any(item["event_id"] == "event_offline_one" for item in replay.json()["events"]))
         stale = self.fixture.client.get(f"/events?cursor={cursor + 100}", headers=self.fixture.headers())

@@ -43,10 +43,11 @@ class EventSubscription:
 
 
 class EventBroker:
-    def __init__(self, *, default_queue_size: int = 100) -> None:
+    def __init__(self, *, default_queue_size: int = 100, ephemeral: Any = None) -> None:
         if not 1 <= default_queue_size <= 500:
             raise ValueError("default_queue_size must be between 1 and 500")
         self.default_queue_size = default_queue_size
+        self.ephemeral = ephemeral
         self._subscriptions: dict[str, EventSubscription] = {}
         self._lock = asyncio.Lock()
 
@@ -75,6 +76,8 @@ class EventBroker:
             self._subscriptions.pop(client_id, None)
 
     async def publish(self, event: StoredEvent) -> None:
+        if self.ephemeral is not None:
+            self.ephemeral.publish_event(event.as_dict())
         async with self._lock:
             subscriptions = list(self._subscriptions.values())
         for subscription in subscriptions:

@@ -43,3 +43,7 @@ def invalid_transition(message: str) -> ControlPlaneError:
 
 def validation(message: str, *, details: Any = None) -> ControlPlaneError:
     return ControlPlaneError("VALIDATION_ERROR", message, 422, details)
+
+
+def database_unavailable(message: str = "persistent storage is unavailable") -> ControlPlaneError:
+    return ControlPlaneError("DATABASE_UNAVAILABLE", message, 503)

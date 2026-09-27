@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
+from contextvars import ContextVar
+from functools import wraps
+from inspect import signature
 from threading import RLock
 from typing import Any, Iterable
 
@@ -36,7 +39,7 @@ from .errors import (
     validation,
 )
 from .event_store import EventStore, StoredEvent
-from .repositories import IdempotencyRepository, RecordRepository, paginate
+from .repositories import IdempotencyRepository, RecordRepository, fingerprint, paginate
 from .websocket import EventBroker
 
 
@@ -52,6 +55,71 @@ def _contract_error(exc: ContractValidationError) -> ControlPlaneError:
     if exc.code in {"INVALID_TIMESTAMP", "INVALID_ENUM", "INVALID_FIELD", "INVALID_REF"}:
         return validation(str(exc), details={"contract_code": exc.code})
     return validation(str(exc), details={"contract_code": exc.code})
+
+
+_PENDING_DELIVERIES: ContextVar[list[tuple[Any, Any, StoredEvent]] | None] = ContextVar(
+    "control_plane_pending_deliveries",
+    default=None,
+)
+
+
+def publish_after_commit(
+    broker: EventBroker,
+    event_store: EventStore,
+    event: StoredEvent,
+) -> None:
+    pending = _PENDING_DELIVERIES.get()
+    if pending is None:
+        broker.publish_nowait(event)
+    else:
+        pending.append((broker, event_store, event))
+
+
+def transactional_mutation(method):
+    """Make each service mutation atomic and serialize its idempotency intent."""
+
+    method_signature = signature(method)
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        bound = method_signature.bind_partial(self, *args, **kwargs)
+        identity = bound.arguments.get("identity")
+        idempotency_key = bound.arguments.get("idempotency_key")
+        pending: list[tuple[Any, Any, StoredEvent]] = []
+        token = _PENDING_DELIVERIES.set(pending)
+        try:
+            with self._lock:
+                with self.adapter.transaction():
+                    if idempotency_key and (identity is None or identity.authenticated):
+                        self.adapter.lock_transaction_key(
+                            f"{type(self).__name__}.{method.__name__}",
+                            str(idempotency_key),
+                        )
+                    result = method(self, *args, **kwargs)
+        except Exception:
+            _PENDING_DELIVERIES.reset(token)
+            for broker, event_store, stored in pending:
+                if (
+                    stored.event.event_type == "security.audit"
+                    and stored.event.payload.get("result") == "DENIED"
+                ):
+                    try:
+                        committed, replayed = event_store.append(stored.event)
+                        if not replayed:
+                            broker.publish_nowait(committed)
+                    except Exception:
+                        pass
+            raise
+        else:
+            _PENDING_DELIVERIES.reset(token)
+            for broker, _, stored in pending:
+                broker.publish_nowait(stored)
+            return result
+        finally:
+            if _PENDING_DELIVERIES.get() is pending:
+                _PENDING_DELIVERIES.reset(token)
+
+    return wrapped
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +289,7 @@ class ServiceBase:
         )
         stored, replayed = self.events.append(event)
         if publish and not replayed:
-            self.broker.publish_nowait(stored)
+            publish_after_commit(self.broker, self.events, stored)
         return stored
 
     def _append_audit(
@@ -322,6 +390,7 @@ class ServiceBase:
 class TaskService(ServiceBase):
     collection = "cp_tasks"
 
+    @transactional_mutation
     def create(
         self,
         identity: RequestIdentity,
@@ -396,7 +465,7 @@ class TaskService(ServiceBase):
             target_type="task",
             target_id=task.task_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="task.create",
             idempotency_key=idempotency_key,
@@ -477,6 +546,7 @@ class TaskService(ServiceBase):
         tasks.sort(key=lambda item: item["updated_at"], reverse=True)
         return paginate(tasks, limit=limit, offset=offset)
 
+    @transactional_mutation
     def transition(
         self,
         identity: RequestIdentity,
@@ -511,6 +581,19 @@ class TaskService(ServiceBase):
         replay = self._replay(kind="task.transition", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("task.transition", task_id)
+        raw = repo.get(task_id)
+        if raw is None:
+            raise not_found("task was not found")
+        task = TaskV1.from_mapping(raw)
+        actor = self._authorize(
+            identity,
+            task.scope,
+            capability,
+            operation=f"task.{next_status.lower()}",
+            target_type="task",
+            target_id=task_id,
+        )
         if next_status.upper() == "ASSIGNED":
             if not assignee_id:
                 raise validation("assignee_id is required when assigning a task")
@@ -559,7 +642,7 @@ class TaskService(ServiceBase):
             target_type="task",
             target_id=task_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="task.transition",
             idempotency_key=idempotency_key,
@@ -572,6 +655,7 @@ class TaskService(ServiceBase):
 class AlertService(ServiceBase):
     collection = "cp_alerts"
 
+    @transactional_mutation
     def create(
         self,
         identity: RequestIdentity,
@@ -609,6 +693,16 @@ class AlertService(ServiceBase):
         replay = self._replay(kind="alert.create", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key(
+            "alert.dedupe",
+            fingerprint(
+                {
+                    "scope": scope.as_dict(),
+                    "reason_code": reason_code,
+                    "dedupe_key": dedupe_key,
+                }
+            ),
+        )
         now = self.clock.now()
         for raw in RecordRepository(self.adapter, self.collection).list():
             existing = AlertV1.from_mapping(raw)
@@ -660,7 +754,7 @@ class AlertService(ServiceBase):
             target_type="alert",
             target_id=alert.alert_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="alert.create",
             idempotency_key=idempotency_key,
@@ -738,6 +832,7 @@ class AlertService(ServiceBase):
         alerts.sort(key=lambda item: item["updated_at"], reverse=True)
         return paginate(alerts, limit=limit, offset=offset)
 
+    @transactional_mutation
     def transition(
         self,
         identity: RequestIdentity,
@@ -764,6 +859,19 @@ class AlertService(ServiceBase):
         replay = self._replay(kind="alert.transition", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("alert.transition", alert_id)
+        raw = repo.get(alert_id)
+        if raw is None:
+            raise not_found("alert was not found")
+        alert = AlertV1.from_mapping(raw)
+        actor = self._authorize(
+            identity,
+            alert.scope,
+            "alert.update",
+            operation=f"alert.{next_status.lower()}",
+            target_type="alert",
+            target_id=alert_id,
+        )
         try:
             transitioned = alert.transition(next_status)
         except ContractValidationError as exc:
@@ -801,7 +909,7 @@ class AlertService(ServiceBase):
             target_type="alert",
             target_id=alert_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="alert.transition",
             idempotency_key=idempotency_key,
@@ -814,6 +922,7 @@ class AlertService(ServiceBase):
 class ApprovalService(ServiceBase):
     collection = "cp_approvals"
 
+    @transactional_mutation
     def create(
         self,
         identity: RequestIdentity,
@@ -876,7 +985,7 @@ class ApprovalService(ServiceBase):
             target_type="approval",
             target_id=approval.approval_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="approval.create",
             idempotency_key=idempotency_key,
@@ -951,6 +1060,7 @@ class ApprovalService(ServiceBase):
         values.sort(key=lambda item: item["requested_at"], reverse=True)
         return paginate(values, limit=limit, offset=offset)
 
+    @transactional_mutation
     def decide(
         self,
         identity: RequestIdentity,
@@ -982,6 +1092,19 @@ class ApprovalService(ServiceBase):
         replay = self._replay(kind="approval.transition", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("approval.transition", approval_id)
+        raw = repo.get(approval_id)
+        if raw is None:
+            raise not_found("approval was not found")
+        approval = ApprovalRequestV1.from_mapping(raw)
+        actor = self._authorize(
+            identity,
+            approval.scope,
+            "approval.decide",
+            operation=f"approval.{next_status.lower()}",
+            target_type="approval",
+            target_id=approval_id,
+        )
         if approval.status != "PENDING":
             raise invalid_transition(f"approval cannot transition from {approval.status} to {next_status.upper()}")
         next_status = next_status.upper()
@@ -1026,7 +1149,7 @@ class ApprovalService(ServiceBase):
             target_type="approval",
             target_id=approval_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="approval.transition",
             idempotency_key=idempotency_key,
@@ -1054,6 +1177,7 @@ class ApprovalService(ServiceBase):
 class DeviceSessionService(ServiceBase):
     collection = "cp_device_sessions"
 
+    @transactional_mutation
     def register(
         self,
         identity: RequestIdentity,
@@ -1097,6 +1221,7 @@ class DeviceSessionService(ServiceBase):
         replay = self._replay(kind="device.session", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("device.identity", device_id)
         existing = self.registry.get_device(device_id)
         if existing is not None and existing.status == "REVOKED":
             raise conflict("revoked device cannot be reopened", code="FORBIDDEN")
@@ -1143,7 +1268,7 @@ class DeviceSessionService(ServiceBase):
             target_type="device",
             target_id=device_id,
         )
-        self.broker.publish_nowait(event)
+        publish_after_commit(self.broker, self.events, event)
         return self._mutation(
             kind="device.session",
             idempotency_key=idempotency_key,
@@ -1172,6 +1297,7 @@ class DeviceSessionService(ServiceBase):
         )
         return raw
 
+    @transactional_mutation
     def heartbeat(self, identity: RequestIdentity, device_id: str, *, idempotency_key: str) -> Mutation:
         payload = {"device_id": device_id}
         self._require_auth(identity)
@@ -1190,6 +1316,11 @@ class DeviceSessionService(ServiceBase):
         replay = self._replay(kind="device.heartbeat", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("device.identity", device_id)
+        raw = self._get(device_id)
+        current = DeviceSessionV1.from_mapping(raw["device"])
+        if current.status == "REVOKED":
+            raise forbidden("revoked device cannot heartbeat")
         updated_device = DeviceSessionV1.create(
             device_id=current.device_id,
             device_type=current.device_type,
@@ -1250,6 +1381,7 @@ class DeviceSessionService(ServiceBase):
                 count += 1
         return count
 
+    @transactional_mutation
     def _set_status(self, identity: RequestIdentity, device_id: str, status: str, idempotency_key: str) -> Mutation:
         payload = {"device_id": device_id, "status": status}
         self._require_auth(identity)
@@ -1266,6 +1398,9 @@ class DeviceSessionService(ServiceBase):
         replay = self._replay(kind=f"device.{status.lower()}", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("device.identity", device_id)
+        raw = self._get(device_id)
+        current = DeviceSessionV1.from_mapping(raw["device"])
         updated = DeviceSessionV1.create(
             device_id=current.device_id,
             device_type=current.device_type,
@@ -1343,6 +1478,7 @@ class WorkerService(ServiceBase):
     degraded_after_seconds = 30
     offline_after_seconds = 120
 
+    @transactional_mutation
     def register(
         self,
         identity: RequestIdentity,
@@ -1371,6 +1507,7 @@ class WorkerService(ServiceBase):
         replay = self._replay(kind="worker.register", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("worker.identity", worker_id)
         worker = BrainWorkerV1.create(
             worker_id=worker_id,
             worker_type=worker_type,
@@ -1411,6 +1548,7 @@ class WorkerService(ServiceBase):
             events=(event, audit),
         )
 
+    @transactional_mutation
     def heartbeat(self, identity: RequestIdentity, worker_id: str, *, idempotency_key: str) -> Mutation:
         payload = {"worker_id": worker_id}
         self._require_auth(identity)
@@ -1429,6 +1567,10 @@ class WorkerService(ServiceBase):
         replay = self._replay(kind="worker.heartbeat", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("worker.identity", worker_id)
+        raw = RecordRepository(self.adapter, self.collection).get(worker_id)
+        if raw is None:
+            raise not_found("worker was not found")
         current = BrainWorkerV1.from_mapping(raw["worker"])
         updated = BrainWorkerV1.create(
             worker_id=current.worker_id,
@@ -1516,6 +1658,7 @@ class LeaseService(ServiceBase):
                 return raw
         return None
 
+    @transactional_mutation
     def acquire(
         self,
         identity: RequestIdentity,
@@ -1545,6 +1688,10 @@ class LeaseService(ServiceBase):
         replay = self._replay(kind="lease.acquire", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key(
+            "lease.resource",
+            f"{resource_type}:{resource_id}",
+        )
         existing = self._active_for(resource_type, resource_id)
         if existing is not None:
             raise conflict("resource has an active lease", code="LEASE_CONFLICT")
@@ -1591,6 +1738,7 @@ class LeaseService(ServiceBase):
             events=(event, audit),
         )
 
+    @transactional_mutation
     def renew(
         self,
         identity: RequestIdentity,
@@ -1618,6 +1766,12 @@ class LeaseService(ServiceBase):
         replay = self._replay(kind="lease.renew", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("lease.identity", lease_id)
+        raw = RecordRepository(self.adapter, self.collection).get(lease_id)
+        if raw is None:
+            raise not_found("lease was not found")
+        if raw.get("organization_id") != identity.organization_id:
+            raise scope_denied("lease belongs to another organization")
         lease = LeaseV1.from_mapping(raw["lease"])
         if raw.get("released_at") is not None or not lease.is_active(self.clock.now()):
             raise conflict("lease is stale or expired", code="LEASE_CONFLICT")
@@ -1660,6 +1814,7 @@ class LeaseService(ServiceBase):
             events=(event, audit),
         )
 
+    @transactional_mutation
     def release(
         self,
         identity: RequestIdentity,
@@ -1686,6 +1841,12 @@ class LeaseService(ServiceBase):
         replay = self._replay(kind="lease.release", idempotency_key=idempotency_key, payload=payload)
         if replay is not None:
             return replay
+        self.adapter.lock_transaction_key("lease.identity", lease_id)
+        raw = RecordRepository(self.adapter, self.collection).get(lease_id)
+        if raw is None:
+            raise not_found("lease was not found")
+        if raw.get("organization_id") != identity.organization_id:
+            raise scope_denied("lease belongs to another organization")
         lease = LeaseV1.from_mapping(raw["lease"])
         if lease.worker_id != worker_id:
             raise conflict("lease worker does not match", code="LEASE_CONFLICT")
