@@ -46,6 +46,8 @@ class RegistryConflict(RegistryError):
 class ContextRegistryRead(Protocol):
     def get_organization(self, organization_id: str) -> OrganizationRecordV1 | None: ...
 
+    def list_shops(self, organization_id: str) -> list[ShopRecordV1]: ...
+
     def get_brand(self, brand_id: str) -> BrandRecordV1 | None: ...
 
     def get_category(self, category_id: str) -> CategoryRecordV1 | None: ...
@@ -321,6 +323,14 @@ class ContextRegistry(ContextRegistryRead, ContextRegistryMutation):
 
     def get_shop(self, shop_id: str) -> ShopRecordV1 | None:
         return self._get(ShopRecordV1, shop_id)
+
+    def list_shops(self, organization_id: str) -> list[ShopRecordV1]:
+        organization_id = _internal_id(organization_id, "organization_id")
+        values = self.adapter.list_records(
+            "shops",
+            filters={"organization_id": organization_id},
+        )
+        return [ShopRecordV1.from_mapping(value) for value in values]
 
     def get_channel(self, channel_id: str) -> ChannelRecordV1 | None:
         return self._get(ChannelRecordV1, channel_id)

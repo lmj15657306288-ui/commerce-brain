@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import secrets
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,21 @@ from .services import (
 )
 from .sync import SyncService
 from .websocket import EventBroker
+from .schemas import (
+    OwnerAlertModel,
+    OwnerAlertPageModel,
+    OwnerApprovalModel,
+    OwnerApprovalPageModel,
+    OwnerActionRequest,
+    OwnerInboxResponseModel,
+    OwnerLiveStatusModel,
+    OwnerRealtimeTicketRequest,
+    OwnerShopDetailModel,
+    OwnerShopModel,
+    OwnerShopPageModel,
+    OwnerSummaryModel,
+    OwnerSystemHealthModel,
+)
 
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
@@ -170,6 +186,9 @@ def create_app(
         broker=broker,
         ephemeral=ephemeral,
     )
+    from .owner import OwnerReadModels
+
+    owner_models = OwnerReadModels(control)
     app = FastAPI(title="Commerce Brain Central Control Plane", version="0.1.0")
     app.state.control_plane = control
     normalized_origins = [
@@ -199,6 +218,7 @@ def create_app(
                 or request.url.path.startswith("/devices")
                 or request.url.path.startswith("/workers")
                 or request.url.path.startswith("/leases")
+                or request.url.path.startswith("/owner")
             )
             if limited_paths:
                 client_host = request.client.host if request.client else "unknown"
@@ -359,6 +379,265 @@ def create_app(
             "execution_enabled": False,
         }
         return JSONResponse(status_code=200 if ready else 503, content=body)
+
+    async def owner_redis_available(service: ControlPlane) -> bool:
+        try:
+            return bool(
+                await asyncio.wait_for(
+                    asyncio.to_thread(service.ephemeral.health_check),
+                    timeout=2.0,
+                )
+            )
+        except Exception:
+            return False
+
+    @app.get("/owner/summary", response_model=OwnerSummaryModel)
+    async def owner_summary(
+        current: RequestIdentity = Depends(identity),
+        service: ControlPlane = Depends(cp),
+    ):
+        return owner_models.summary(
+            current,
+            redis_ok=await owner_redis_available(service),
+        )
+
+    @app.get("/owner/inbox", response_model=OwnerInboxResponseModel)
+    async def owner_inbox(
+        owner_category: str | None = Query(
+            default=None,
+            pattern="^(NEED_DECISION|NEED_APPROVAL|NEED_AWARENESS)$",
+        ),
+        shop_id: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        current: RequestIdentity = Depends(identity),
+    ):
+        items, truncated = owner_models.inbox_items(current)
+        if owner_category is not None:
+            items = [item for item in items if item["owner_category"] == owner_category]
+        if shop_id is not None:
+            items = [
+                item
+                for item in items
+                if item["scope"].get("shop_id") == shop_id
+            ]
+        return owner_models.paginate(
+            items,
+            limit=limit,
+            offset=offset,
+            truncated=truncated,
+        )
+
+    @app.get("/owner/alerts", response_model=OwnerAlertPageModel)
+    async def owner_alerts(
+        status: str | None = Query(default=None, max_length=24),
+        priority: str | None = Query(default=None, pattern="^P[0-3]$"),
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        current: RequestIdentity = Depends(identity),
+    ):
+        items, truncated = owner_models.alerts(
+            current,
+            status=status,
+            priority=priority,
+        )
+        return owner_models.paginate(
+            items,
+            limit=limit,
+            offset=offset,
+            truncated=truncated,
+        )
+
+    @app.get("/owner/alerts/{alert_id}", response_model=OwnerAlertModel)
+    async def owner_alert_detail(
+        alert_id: str,
+        current: RequestIdentity = Depends(identity),
+    ):
+        return owner_models.alert(current, alert_id)
+
+    @app.post("/owner/alerts/{alert_id}/ack")
+    async def owner_acknowledge_alert(
+        alert_id: str,
+        body: OwnerActionRequest,
+        current: RequestIdentity = Depends(identity),
+    ):
+        return owner_models.transition_alert(
+            current,
+            alert_id=alert_id,
+            next_status="ACKNOWLEDGED",
+            device_id=body.device_id,
+            idempotency_key=body.idempotency_key,
+        )
+
+    @app.post("/owner/alerts/{alert_id}/resolve")
+    async def owner_resolve_alert(
+        alert_id: str,
+        body: OwnerActionRequest,
+        current: RequestIdentity = Depends(identity),
+    ):
+        return owner_models.transition_alert(
+            current,
+            alert_id=alert_id,
+            next_status="RESOLVED",
+            device_id=body.device_id,
+            idempotency_key=body.idempotency_key,
+        )
+
+    @app.get("/owner/approvals", response_model=OwnerApprovalPageModel)
+    async def owner_approvals(
+        status: str | None = Query(default="PENDING", max_length=32),
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        current: RequestIdentity = Depends(identity),
+    ):
+        items, truncated = owner_models.approvals(current, status=status)
+        return owner_models.paginate(
+            items,
+            limit=limit,
+            offset=offset,
+            truncated=truncated,
+        )
+
+    @app.get("/owner/approvals/{approval_id}", response_model=OwnerApprovalModel)
+    async def owner_approval_detail(
+        approval_id: str,
+        current: RequestIdentity = Depends(identity),
+    ):
+        return owner_models.approval(current, approval_id)
+
+    def owner_approval_action(status: str):
+        async def handler(
+            approval_id: str,
+            body: OwnerActionRequest,
+            current: RequestIdentity = Depends(identity),
+        ):
+            return owner_models.decide_approval(
+                current,
+                approval_id=approval_id,
+                next_status=status,
+                device_id=body.device_id,
+                idempotency_key=body.idempotency_key,
+                decision_note=body.decision_note,
+            )
+
+        return handler
+
+    app.add_api_route(
+        "/owner/approvals/{approval_id}/approve",
+        owner_approval_action("APPROVED"),
+        methods=["POST"],
+    )
+    app.add_api_route(
+        "/owner/approvals/{approval_id}/reject",
+        owner_approval_action("REJECTED"),
+        methods=["POST"],
+    )
+    app.add_api_route(
+        "/owner/approvals/{approval_id}/request-revision",
+        owner_approval_action("REVISION_REQUESTED"),
+        methods=["POST"],
+    )
+
+    @app.get("/owner/shops", response_model=OwnerShopPageModel)
+    async def owner_shops(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        current: RequestIdentity = Depends(identity),
+    ):
+        items = owner_models.shops(current)
+        page = items[offset : offset + limit]
+        next_offset = offset + len(page)
+        return {
+            "items": page,
+            "total": len(items),
+            "next_offset": next_offset if next_offset < len(items) else None,
+            "limit": limit,
+        }
+
+    @app.get("/owner/shops/{shop_id}", response_model=OwnerShopDetailModel)
+    async def owner_shop_detail(
+        shop_id: str,
+        current: RequestIdentity = Depends(identity),
+    ):
+        return owner_models.shop_detail(current, shop_id)
+
+    @app.get("/owner/system-health", response_model=OwnerSystemHealthModel)
+    async def owner_system_health(
+        current: RequestIdentity = Depends(identity),
+        service: ControlPlane = Depends(cp),
+    ):
+        return owner_models.system_health(
+            current,
+            redis_ok=await owner_redis_available(service),
+        )
+
+    @app.get("/owner/live-status", response_model=OwnerLiveStatusModel)
+    async def owner_live_status(current: RequestIdentity = Depends(identity)):
+        return owner_models.live_status(current)
+
+    @app.post("/owner/realtime-ticket")
+    async def owner_realtime_ticket(
+        body: OwnerRealtimeTicketRequest,
+        request: Request,
+        response: Response,
+        current: RequestIdentity = Depends(identity),
+        service: ControlPlane = Depends(cp),
+    ):
+        origin = request.headers.get("origin", "")
+        if not origin or origin not in normalized_origins:
+            raise ControlPlaneError("ORIGIN_DENIED", "request origin is not allowed", 403)
+        if current.device_id is not None and current.device_id != body.device_id:
+            raise ControlPlaneError("FORBIDDEN", "device does not match the authenticated identity", 403)
+        device_session = service.devices.ensure_active(current, body.device_id)
+        from core.contracts import DeviceSessionV1
+
+        device = DeviceSessionV1.from_mapping(device_session["device"])
+        if (
+            device.organization_id != current.organization_id
+            or device.user_id != current.actor_id
+        ):
+            raise ControlPlaneError("FORBIDDEN", "device session is not owned by this actor", 403)
+        scope = body.scope.to_contract()
+        service.tasks._authorize(
+            current,
+            scope,
+            "event.read",
+            operation="owner.event.subscribe",
+            target_type="websocket",
+            target_id=body.device_id,
+            allow_archived=True,
+        )
+        if body.cursor > service.events.latest_cursor:
+            raise ControlPlaneError(
+                "STALE_CURSOR",
+                "cursor is ahead of the server history",
+                409,
+            )
+        ticket = secrets.token_urlsafe(32)
+        ticket_value = {
+            "actor_id": current.actor_id,
+            "organization_id": current.organization_id,
+            "device_id": body.device_id,
+            "roles": list(current.roles),
+            "scope": scope.as_dict(),
+            "cursor": body.cursor,
+            "origin": origin,
+        }
+        issued = await asyncio.to_thread(
+            service.ephemeral.issue_ticket,
+            ticket,
+            ticket_value,
+            ttl_seconds=60,
+        )
+        if not issued:
+            raise ControlPlaneError(
+                "REALTIME_UNAVAILABLE",
+                "real-time connection is temporarily unavailable",
+                503,
+            )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return {"ticket": ticket, "expires_in": 60}
     @app.get("/context/shops/{shop_id}")
     async def get_shop(
         shop_id: str,
@@ -786,16 +1065,69 @@ def create_app(
             await websocket.close(code=4403, reason="ORIGIN_DENIED")
             return
         current = service.auth_provider.authenticate_websocket(websocket)
+        ticket_scope: ScopeV1 | None = None
+        ticket_cursor: int | None = None
+        ticket_connection = not current.authenticated
+        if ticket_connection:
+            await websocket.accept()
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+            except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
+                await websocket.close(code=4401, reason="UNAUTHENTICATED")
+                return
+            ticket = message.get("ticket") if isinstance(message, dict) else None
+            if (
+                not isinstance(message, dict)
+                or message.get("type") != "authenticate"
+                or not isinstance(ticket, str)
+            ):
+                await websocket.close(code=4401, reason="UNAUTHENTICATED")
+                return
+            try:
+                ticket_value = await asyncio.to_thread(
+                    service.ephemeral.consume_ticket,
+                    ticket,
+                )
+            except Exception:
+                ticket_value = None
+            if (
+                not isinstance(ticket_value, dict)
+                or ticket_value.get("origin") != origin
+            ):
+                await websocket.close(code=4401, reason="UNAUTHENTICATED")
+                return
+            current = RequestIdentity(
+                actor_id=str(ticket_value.get("actor_id") or ""),
+                organization_id=str(ticket_value.get("organization_id") or ""),
+                device_id=str(ticket_value.get("device_id") or ""),
+                roles=tuple(ticket_value.get("roles") or ()),
+                authenticated=True,
+                auth_source="websocket-ticket",
+            )
+            try:
+                ticket_scope = ScopeV1.from_mapping(ticket_value["scope"])
+                ticket_cursor = int(ticket_value["cursor"])
+            except (KeyError, TypeError, ValueError, ContractValidationError):
+                await websocket.close(code=4401, reason="UNAUTHENTICATED")
+                return
+
+        device_id = (
+            ticket_value.get("device_id")
+            if ticket_connection
+            else websocket.query_params.get("device_id") or current.device_id
+        )
         if not current.authenticated:
             await websocket.close(code=4401, reason="UNAUTHENTICATED")
             return
-        device_id = websocket.query_params.get("device_id") or current.device_id
         if not device_id or (current.device_id is not None and current.device_id != device_id):
+            await websocket.close(code=4403, reason="FORBIDDEN")
+            return
+        if ticket_connection and websocket.query_params.get("device_id") != device_id:
             await websocket.close(code=4403, reason="FORBIDDEN")
             return
         try:
             service.devices.ensure_active(current, device_id)
-            scope = _scope_for_identity(
+            scope = ticket_scope or _scope_for_identity(
                 current,
                 organization_id=websocket.query_params.get("organization_id"),
                 brand_id=websocket.query_params.get("brand_id"),
@@ -812,19 +1144,18 @@ def create_app(
                 target_id=device_id,
                 allow_archived=True,
             )
-            cursor = int(websocket.query_params.get("cursor", "0"))
-            queue_size = min(max(int(websocket.query_params.get("queue_size", "100")), 1), 500)
-            replay = service.events.get_events_after(
-                cursor,
-                scope=scope,
-                limit=500,
-                visible=lambda event: service.sync._visible(current, event),
+            cursor = (
+                ticket_cursor
+                if ticket_cursor is not None
+                else int(websocket.query_params.get("cursor", "0"))
             )
+            queue_size = min(max(int(websocket.query_params.get("queue_size", "100")), 1), 500)
         except (ValueError, ControlPlaneError):
             await websocket.close(code=4403, reason="SCOPE_DENIED")
             return
 
-        await websocket.accept()
+        if not ticket_connection:
+            await websocket.accept()
 
         async def close_slow(reason: str) -> None:
             if websocket.application_state == WebSocketState.CONNECTED:
@@ -836,6 +1167,21 @@ def create_app(
             max_queue=queue_size,
             visible=lambda event: service.sync._visible(current, event),
             close_callback=close_slow,
+        )
+        if ticket_connection:
+            await websocket.send_json(
+                {
+                    "type": "authenticated",
+                    "server_time": service.clock.now().isoformat(),
+                    "resume_cursor": cursor,
+                }
+            )
+
+        replay = service.events.get_events_after(
+            cursor,
+            scope=scope,
+            limit=500,
+            visible=lambda event: service.sync._visible(current, event),
         )
         for event in replay:
             subscription.offer(event)

@@ -1,0 +1,9 @@
+{$PUBLIC_DOMAIN:brain.apizz.cc.cd} {
+    encode gzip
+    reverse_proxy control-plane:8000
+}
+
+{$OWNER_PUBLIC_DOMAIN:app.apizz.cc.cd} {
+    encode gzip
+    reverse_proxy owner-mobile:80
+}

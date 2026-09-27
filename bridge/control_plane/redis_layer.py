@@ -27,6 +27,7 @@ class RedisEphemeralLayer:
         self.client = client
         self._lock = RLock()
         self.last_error: str | None = None
+        self._tickets: dict[str, tuple[float, dict[str, Any]]] = {}
         if socket_timeout <= 0 or socket_connect_timeout <= 0:
             raise ValueError("Redis timeouts must be positive")
         if self.client is None:
@@ -111,11 +112,38 @@ class RedisEphemeralLayer:
             self.last_error = type(exc).__name__
             return True
 
+    def issue_ticket(self, ticket_id: str, value: dict[str, Any], *, ttl_seconds: int) -> bool:
+        try:
+            created = self.client.set(
+                f"ws-ticket:{ticket_id}",
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                ex=ttl_seconds,
+                nx=True,
+            )
+            self.last_error = None
+            return bool(created)
+        except Exception as exc:
+            self.last_error = type(exc).__name__
+            return False
+
+    def consume_ticket(self, ticket_id: str) -> dict[str, Any] | None:
+        try:
+            raw = self.client.getdel(f"ws-ticket:{ticket_id}")
+            self.last_error = None
+            return None if raw is None else json.loads(raw)
+        except Exception as exc:
+            self.last_error = type(exc).__name__
+            return None
+
 
 class NoopEphemeralLayer:
     """Deterministic local fallback for tests and SQLite development."""
 
     degraded = False
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._tickets: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def health_check(self) -> bool:
         return True
@@ -131,3 +159,28 @@ class NoopEphemeralLayer:
 
     def allow_rate(self, key: str, *, limit: int, window_seconds: int) -> bool:
         return True
+
+    def issue_ticket(self, ticket_id: str, value: dict[str, Any], *, ttl_seconds: int) -> bool:
+        with self._lock:
+            self._purge_tickets()
+            if ticket_id in self._tickets:
+                return False
+            self._tickets[ticket_id] = (
+                time.monotonic() + ttl_seconds,
+                dict(value),
+            )
+            return True
+
+    def consume_ticket(self, ticket_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            self._purge_tickets()
+            value = self._tickets.pop(ticket_id, None)
+            return None if value is None else value[1]
+
+    def _purge_tickets(self) -> None:
+        now = time.monotonic()
+        self._tickets = {
+            ticket: value
+            for ticket, value in self._tickets.items()
+            if value[0] > now
+        }

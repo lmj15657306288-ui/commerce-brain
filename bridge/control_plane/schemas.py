@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,6 +33,10 @@ class BusinessImpactModel(StrictModel):
     customer_impact: float | None = None
     live_impact: float | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class OwnerBusinessImpactModel(BusinessImpactModel):
+    schema_version: Literal[1] = 1
 
 
 class TaskCreateRequest(StrictModel):
@@ -146,6 +150,172 @@ class EventIngestRequest(StrictModel):
 class PageQuery(StrictModel):
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
+
+
+class OwnerRealtimeTicketRequest(StrictModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    scope: ScopeModel
+    cursor: int = Field(default=0, ge=0)
+
+
+class OwnerActionRequest(StrictModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    decision_note: str | None = Field(default=None, max_length=1000)
+
+
+class OwnerInboxItemModel(StrictModel):
+    item_id: str
+    item_type: Literal["TASK", "ALERT", "APPROVAL"]
+    owner_category: Literal["NEED_DECISION", "NEED_APPROVAL", "NEED_AWARENESS"]
+    title: str
+    summary: str
+    why_it_matters: str
+    recommended_action: str
+    scope: ScopeModel
+    priority: str | int
+    business_impact: OwnerBusinessImpactModel | None
+    status: str
+    created_at: str
+    updated_at: str
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+    source_ref: str
+    shop_name: str | None = None
+    rank_score: float | None = None
+    rank_reason: str | None = None
+
+
+class OwnerInboxResponseModel(StrictModel):
+    items: list[OwnerInboxItemModel]
+    total: int
+    next_offset: int | None
+    limit: int
+    truncated: bool
+
+
+class OwnerAttentionCountsModel(StrictModel):
+    need_decision: int | None
+    need_approval: int | None
+    need_awareness: int | None
+
+
+class OwnerSummaryModel(StrictModel):
+    schema_version: Literal[1] = 1
+    organization_id: str
+    overall_health: Literal["HEALTHY", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    attention_counts: OwnerAttentionCountsModel
+    shop_count: int | None
+    worker_health: Literal["ONLINE", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    system_health: Literal["HEALTHY", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    generated_at: str
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+    counts_complete: bool
+
+
+class OwnerAlertModel(StrictModel):
+    alert_id: str
+    scope: ScopeModel
+    priority: Literal["P0", "P1", "P2", "P3"]
+    status: str
+    reason_code: str
+    summary: str
+    evidence_refs: list[str]
+    business_impact: OwnerBusinessImpactModel
+    recommended_action: str
+    created_at: str
+    updated_at: str
+    cooldown_until: str | None
+    shop_name: str | None = None
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+
+
+class OwnerAlertPageModel(StrictModel):
+    items: list[OwnerAlertModel]
+    total: int
+    next_offset: int | None
+    limit: int
+    truncated: bool
+
+
+class OwnerApprovalModel(StrictModel):
+    approval_id: str
+    title: str
+    proposal_id: str
+    scope: ScopeModel
+    shop_name: str | None = None
+    risk_level: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    requested_by: str
+    requested_at: str
+    reason: str
+    business_impact: None = None
+    evidence: list[str]
+    expires_at: str
+    status: str
+    decided_by: str | None
+    decided_at: str | None
+    decision_note: str | None
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+
+
+class OwnerApprovalPageModel(StrictModel):
+    items: list[OwnerApprovalModel]
+    total: int
+    next_offset: int | None
+    limit: int
+    truncated: bool
+
+
+class OwnerWorkerModel(StrictModel):
+    worker_id: str
+    worker_type: str
+    status: Literal["ONLINE", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    last_seen_at: str
+    capabilities: list[str]
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+
+
+class OwnerSystemHealthModel(StrictModel):
+    cloud_status: Literal["HEALTHY", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    brain_worker_status: Literal["ONLINE", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    realtime_status: Literal["HEALTHY", "DEGRADED", "OFFLINE", "UNKNOWN"]
+    data_freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+    last_updated: str
+    workers: list[OwnerWorkerModel]
+
+
+class OwnerShopModel(StrictModel):
+    shop_id: str
+    shop_name: str
+    status: str
+    category_memberships: list[dict[str, str]]
+    high_priority_alerts: int
+    pending_approvals: int
+    important_tasks: int
+    health: Literal["ATTENTION", "UNKNOWN"]
+    live_status: Literal["NOT_CONNECTED"]
+    freshness: Literal["FRESH", "DELAYED", "STALE", "UNKNOWN"]
+    last_updated: str | None
+
+
+class OwnerShopPageModel(StrictModel):
+    items: list[OwnerShopModel]
+    total: int
+    next_offset: int | None
+    limit: int
+
+
+class OwnerShopDetailModel(StrictModel):
+    shop: OwnerShopModel
+    attention_items: list[OwnerInboxItemModel]
+    approvals: list[OwnerApprovalModel]
+    business_data_status: Literal["NOT_CONNECTED"]
+
+
+class OwnerLiveStatusModel(StrictModel):
+    status: Literal["NOT_CONNECTED"]
+    freshness: Literal["UNKNOWN"]
+    last_updated: None = None
+    message: str
 
 
 def query_scope(

@@ -1,0 +1,28 @@
+services:
+  owner-mobile:
+    build:
+      context: ..
+      dockerfile: owner_mobile/Dockerfile
+      args:
+        VITE_CONTROL_PLANE_URL: ${VITE_CONTROL_PLANE_URL:-https://brain.apizz.cc.cd}
+    image: commerce-brain-owner-mobile:${APP_VERSION:-dev}
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  reverse-proxy:
+    volumes:
+      - ./Caddyfile.owner-mobile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      owner-mobile:
+        condition: service_healthy
