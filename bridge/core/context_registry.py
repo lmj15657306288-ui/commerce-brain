@@ -68,7 +68,14 @@ class ContextRegistryRead(Protocol):
 
     def scope_exists(self, scope: ScopeV1, *, include_archived: bool = False) -> bool: ...
 
-    def actor_can_access(self, actor_id: str, scope: ScopeV1, capability: str) -> bool: ...
+    def actor_can_access(
+        self,
+        actor_id: str,
+        scope: ScopeV1,
+        capability: str,
+        *,
+        include_archived: bool = False,
+    ) -> bool: ...
 
     def list_actor_scopes(self, actor_id: str, capability: str | None = None) -> list[ScopeV1]: ...
 
@@ -443,8 +450,15 @@ class ContextRegistry(ContextRegistryRead, ContextRegistryMutation):
     def validate_scope(self, scope: ScopeV1) -> bool:
         return self.scope_exists(scope)
 
-    def actor_can_access(self, actor_id: str, scope: ScopeV1, capability: str) -> bool:
-        if not self.scope_exists(scope):
+    def actor_can_access(
+        self,
+        actor_id: str,
+        scope: ScopeV1,
+        capability: str,
+        *,
+        include_archived: bool = False,
+    ) -> bool:
+        if not self.scope_exists(scope, include_archived=include_archived):
             return False
         actor_id = _safe_ref(actor_id, "actor_id")
         capability = _safe_ref(capability, "capability", limit=80)
