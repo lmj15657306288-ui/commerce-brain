@@ -15,15 +15,34 @@ class RedisEphemeralLayer:
     remains the source of truth for all business state and event history.
     """
 
-    def __init__(self, url: str, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        client: Any | None = None,
+        socket_timeout: float = 2.0,
+        socket_connect_timeout: float = 2.0,
+    ) -> None:
         self.url = url
         self.client = client
         self._lock = RLock()
         self.last_error: str | None = None
+        if socket_timeout <= 0 or socket_connect_timeout <= 0:
+            raise ValueError("Redis timeouts must be positive")
         if self.client is None:
             from redis import Redis
+            from redis.backoff import NoBackoff
+            from redis.retry import Retry
 
-            self.client = Redis.from_url(url, decode_responses=True)
+            self.client = Redis.from_url(
+                url,
+                decode_responses=True,
+                socket_timeout=min(socket_timeout, 1.0),
+                socket_connect_timeout=min(socket_connect_timeout, 1.0),
+                retry_on_timeout=False,
+                retry=Retry(NoBackoff(), retries=0),
+                health_check_interval=30,
+            )
 
     @property
     def degraded(self) -> bool:

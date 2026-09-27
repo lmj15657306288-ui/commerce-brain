@@ -26,6 +26,8 @@ services:
       - jwt_public_key
     expose:
       - "8000"
+    ports:
+      - "127.0.0.1:8840:8000"
     depends_on:
       postgres:
         condition: service_healthy

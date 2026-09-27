@@ -77,7 +77,11 @@ class EventBroker:
 
     async def publish(self, event: StoredEvent) -> None:
         if self.ephemeral is not None:
-            self.ephemeral.publish_event(event.as_dict())
+            try:
+                await asyncio.to_thread(self.ephemeral.publish_event, event.as_dict())
+            except Exception:
+                # Redis fanout is ephemeral; Event Store remains the recovery source.
+                pass
         async with self._lock:
             subscriptions = list(self._subscriptions.values())
         for subscription in subscriptions:

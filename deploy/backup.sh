@@ -13,13 +13,14 @@ fi
 : "${POSTGRES_USER:?set POSTGRES_USER in deploy/.env}"
 : "${POSTGRES_DB:?set POSTGRES_DB in deploy/.env}"
 
+compose_project="${COMPOSE_PROJECT_NAME:-commerce-brain}"
 backup_dir="${BACKUP_DIR:-./backups}"
 mkdir -p "$backup_dir"
 chmod 700 "$backup_dir"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 target="$backup_dir/commerce-brain-${stamp}.dump"
 
-docker compose --env-file .env exec -T postgres \
+docker compose --project-name "$compose_project" --env-file .env exec -T postgres \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$target"
 
 docker run --rm -i postgres:16-alpine pg_restore --list < "$target" >/dev/null

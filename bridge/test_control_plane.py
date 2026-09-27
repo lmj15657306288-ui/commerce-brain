@@ -207,6 +207,11 @@ class ControlPlaneApiTests(unittest.TestCase):
         self.assertEqual(401, response.status_code)
         self.assertEqual("UNAUTHENTICATED", response.json()["error_code"])
 
+    def test_unauthenticated_read_fails_closed_without_server_error(self) -> None:
+        response = self.client.get("/tasks?limit=1")
+        self.assertEqual(401, response.status_code)
+        self.assertEqual("UNAUTHENTICATED", response.json()["error_code"])
+
     def test_task_lifecycle_is_explicit_and_idempotent(self) -> None:
         payload = {
             "scope": {"organization_id": ORG, "shop_id": SHOP_A},

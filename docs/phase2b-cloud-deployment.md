@@ -29,7 +29,7 @@ Internet
    ▼
 Caddy / HTTPS WebSocket proxy
    ▼
-FastAPI Control Plane
+FastAPI Control Plane (127.0.0.1:8840 diagnostics)
    ├── PostgreSQL  (authoritative truth)
    └── Redis       (ephemeral only)
 
@@ -50,6 +50,8 @@ Shop、Cloud Server 和 Brain Worker 没有 1:1 绑定。一台 Mac Worker 可�
 
 `deploy/docker-compose.local-test.yml` 仅把 Control Plane 绑定到
 `127.0.0.1:18000`，用于本机 smoke，不是公网部署配置。
+生产 Compose 同时把 Control Plane 绑定到服务器回环地址
+`127.0.0.1:8840`，仅供本机诊断；公网入口仍只有 Caddy 的 `80/443`。
 
 ## 3. PostgreSQL
 
@@ -103,7 +105,10 @@ Redis 只用于：
 
 Redis 不保存 Task、Alert、Approval、Event history、Finance 或 Knowledge
 事实。Redis `PING` 或 publish 失败时，健康状态为 `degraded`，核心 PostgreSQL
-读写仍继续；不会先写 Redis 再假设稍后补回 PostgreSQL。
+读写仍继续；Redis client 禁用自动重试并使用有限超时，失败会快速回退，不会让
+核心写请求无限等待。WebSocket fanout 也是 best-effort 异步操作，不会阻塞
+PostgreSQL 事务或 API 响应。HTTP 限流和健康检查也在有界线程调用中执行，
+超时即按 degraded 处理。不会先写 Redis 再假设稍后补回 PostgreSQL。
 
 `/health` 会分别显示 PostgreSQL 和 Redis 状态。`/readiness` 要求 PostgreSQL
 可用和生产 AuthProvider 已配置，Redis 是 optional degraded dependency。
@@ -227,9 +232,11 @@ Mac 离线时：
 
 ## 10. Backup / Restore / Rollback
 
-`deploy/backup.sh` 使用 `pg_dump -Fc`，备份文件权限为 `600`，默认保留最近
-7 个 daily backup，并用 `pg_restore --list` 验证 archive 可读。完整恢复步骤在
-`deploy/restore.md`，恢复测试必须使用隔离数据库，不直接覆盖生产库。
+`deploy/backup.sh` 使用 `pg_dump -Fc`，默认固定使用 Compose project
+`commerce-brain`（也可通过 `COMPOSE_PROJECT_NAME` 覆盖），备份文件权限为
+`600`，默认保留最近 7 个 daily backup，并用 `pg_restore --list` 验证 archive
+可读。完整恢复步骤在 `deploy/restore.md`，恢复测试必须使用隔离数据库，不直接
+覆盖生产库。
 
 镜像使用 `APP_VERSION` 和 `GIT_SHA`，不使用 `latest` 作为回滚依据。迁移当前
 没有 destructive change；先部署可兼容的新 schema，再更新应用，可回滚旧镜像。
@@ -264,15 +271,17 @@ smoke 会：
 
 截至 2026-09-27：
 
-- 未部署到 8C8G 云服务器；
-- 当前机器 Docker client 可见，但 Docker daemon 不可连接；
-- 未发现已授权的 SSH host 配置；
-- 未提供可用 production domain；
-- 未提供 production JWT public key、数据库密码或 Redis 配置；
-- Caddy 仅提供 reverse proxy/TLS 模板，未声称真实证书签发成功。
+- 已完成 `APP_VERSION=phase2b-4a-0d0993a` 基础镜像部署，并在生产验收修复后
+  重新构建；最终运行时 `APP_VERSION` / `GIT_SHA` 以服务器 `deploy/.env`
+  和容器 image label 为准；
+- PostgreSQL、Redis、Control Plane、Caddy 使用独立 Compose 项目和持久卷；
+- Caddy 已取得真实 ACME 证书，HTTP→HTTPS 和 WSS 均已验证；
+- Mac Brain Worker 已完成注册、heartbeat、OFFLINE 判定和 cursor replay；
+- 已完成 Redis/PostgreSQL failure drill、服务重启持久化、真实备份和隔离恢复测试；
+- 服务器现有业务目录、容器、数据库、Redis、Cloudflare Tunnel、Nginx 业务配置未修改；
+- 生产 JWT 私钥只保留在签发端 Mac，服务器仅挂载公钥；密码和 token 未写入 Git 或日志。
 
-因此本轮交付的是可审计的 production-like foundation 和部署材料，不是伪造的
-线上部署结果。
+因此本记录对应真实生产验收与可审计的部署结果；真实平台写操作仍保持关闭。
 
 ## 13. Non-goals
 

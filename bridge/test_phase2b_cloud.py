@@ -142,6 +142,12 @@ class RedisDegradedTests(unittest.TestCase):
         self.assertTrue(layer.allow_rate("client", limit=1, window_seconds=60))
         self.assertTrue(layer.degraded)
 
+    def test_redis_timeout_configuration_is_bounded(self) -> None:
+        with self.assertRaises(ValueError):
+            RedisEphemeralLayer("redis://unavailable", socket_timeout=0)
+        with self.assertRaises(ValueError):
+            RedisEphemeralLayer("redis://unavailable", socket_connect_timeout=0)
+
 
 class WorkerClientTests(unittest.TestCase):
     class FakeTransport:

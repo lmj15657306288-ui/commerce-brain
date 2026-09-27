@@ -20,7 +20,7 @@ from core.persistence import InMemoryPersistenceAdapter, PersistenceAdapter, Per
 
 from .auth import AuthProvider, FailClosedAuthProvider, RequestIdentity
 from .clock import Clock, SystemClock
-from .errors import ControlPlaneError, database_unavailable, validation
+from .errors import ControlPlaneError, database_unavailable, unauthenticated, validation
 from .event_store import EventStore
 from .repositories import IdempotencyRepository
 from .redis_layer import NoopEphemeralLayer
@@ -202,11 +202,20 @@ def create_app(
             )
             if limited_paths:
                 client_host = request.client.host if request.client else "unknown"
-                allowed = control.ephemeral.allow_rate(
-                    f"{client_host}:{request.method}:{request.url.path}",
-                    limit=rate_limit_per_minute,
-                    window_seconds=60,
-                )
+                try:
+                    allowed = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            control.ephemeral.allow_rate,
+                            f"{client_host}:{request.method}:{request.url.path}",
+                            limit=rate_limit_per_minute,
+                            window_seconds=60,
+                        ),
+                        timeout=2.0,
+                    )
+                except Exception:
+                    # Rate limiting is ephemeral; a Redis outage must not block
+                    # PostgreSQL-backed business state mutations.
+                    allowed = True
                 if not allowed:
                     response = JSONResponse(
                         status_code=429,
@@ -287,7 +296,13 @@ def create_app(
     @app.get("/health")
     async def health(service: ControlPlane = Depends(cp)):
         database_ok = getattr(service.adapter, "health_check", lambda: True)()
-        redis_ok = service.ephemeral.health_check()
+        try:
+            redis_ok = await asyncio.wait_for(
+                asyncio.to_thread(service.ephemeral.health_check),
+                timeout=2.0,
+            )
+        except Exception:
+            redis_ok = False
         schema_version = service.adapter.schema_version if database_ok else None
         supported_schema_version = getattr(
             service.adapter,
@@ -314,7 +329,13 @@ def create_app(
     @app.get("/readiness")
     async def readiness(service: ControlPlane = Depends(cp)):
         database_ok = getattr(service.adapter, "health_check", lambda: True)()
-        redis_ok = service.ephemeral.health_check()
+        try:
+            redis_ok = await asyncio.wait_for(
+                asyncio.to_thread(service.ephemeral.health_check),
+                timeout=2.0,
+            )
+        except Exception:
+            redis_ok = False
         auth_configured = bool(getattr(service.auth_provider, "configured", False))
         schema_version = service.adapter.schema_version if database_ok else None
         supported_schema_version = getattr(
