@@ -49,6 +49,50 @@ APPROVAL_STATUSES = frozenset(
     {"PENDING", "APPROVED", "REJECTED", "REVISION_REQUESTED", "EXPIRED", "CANCELLED"}
 )
 RISK_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH", "CRITICAL"})
+CONTEXT_STATUSES = frozenset({"ACTIVE", "DISABLED", "ARCHIVED"})
+ContextStatus = CONTEXT_STATUSES
+MEMBERSHIP_SOURCES = frozenset(
+    {"MANUAL", "MASTER_DATA", "OFFICIAL_MAPPING", "IMPORTED_MAPPING", "INFERRED"}
+)
+MEMBERSHIP_STATUSES = frozenset({"ACTIVE", "PROPOSED", "DISABLED"})
+ROLE_ASSIGNMENT_STATUSES = frozenset({"ACTIVE", "DISABLED", "EXPIRED"})
+GRANT_EFFECTS = frozenset({"ALLOW", "DENY"})
+DEFAULT_ROLE_CAPABILITIES = {
+    "OWNER": frozenset(
+        {
+            "context.read",
+            "context.create",
+            "context.update",
+            "scope.read",
+            "task.read",
+            "task.create",
+            "task.assign",
+            "approval.read",
+            "approval.decide",
+            "external_ref.resolve",
+            "worker.read",
+        }
+    ),
+    "MANAGER": frozenset(
+        {
+            "context.read",
+            "context.create",
+            "scope.read",
+            "task.read",
+            "task.create",
+            "task.assign",
+            "approval.read",
+            "approval.decide",
+            "external_ref.resolve",
+            "worker.read",
+        }
+    ),
+    "OPERATOR": frozenset({"context.read", "scope.read", "task.read", "task.update"}),
+    "CUSTOMERSERVICE": frozenset({"context.read", "scope.read", "task.read", "task.update"}),
+    "LIVECONTROL": frozenset({"context.read", "scope.read", "task.read", "task.update"}),
+    "LOGISTICS": frozenset({"context.read", "scope.read", "task.read", "task.update"}),
+    "VIEWER": frozenset({"context.read", "scope.read", "task.read"}),
+}
 
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$")
@@ -142,6 +186,17 @@ def _optional_internal_id(value: Any, field: str) -> str | None:
     if value is None:
         return None
     return _internal_id(value, field)
+
+
+def _namespaced_id(value: Any, field: str, prefixes: tuple[str, ...]) -> str:
+    result = _safe_ref(value, field)
+    if not any(result.lower().startswith(f"{prefix}_") or result.lower().startswith(f"{prefix}-") for prefix in prefixes):
+        raise ContractValidationError("INVALID_ID", f"{field} must use the Commerce Brain ID namespace.")
+    return result
+
+
+def _optional_namespaced_id(value: Any, field: str, prefixes: tuple[str, ...]) -> str | None:
+    return None if value is None else _namespaced_id(value, field, prefixes)
 
 
 def _timestamp(value: Any, field: str) -> str:
@@ -1058,3 +1113,480 @@ class IdempotencyLedger:
 
     def get(self, *, kind: str, idempotency_key: str) -> str | None:
         return self._entries.get((_safe_ref(kind, "kind"), _safe_ref(idempotency_key, "idempotency_key")))
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationRecordV1:
+    schema_version: int
+    organization_id: str
+    name: str
+    status: str
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        organization_id: str,
+        name: str,
+        status: str = "ACTIVE",
+        created_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> "OrganizationRecordV1":
+        created = _timestamp(created_at or _now(), "created_at")
+        return cls(
+            SCHEMA_VERSION,
+            _internal_id(organization_id, "organization_id"),
+            _text(name, "name", limit=200),
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+            created,
+            _timestamp(updated_at or created, "updated_at"),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "OrganizationRecordV1":
+        _unknown_fields(value, {"schema_version", "organization_id", "name", "status", "created_at", "updated_at"}, "OrganizationRecordV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "organization schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "organization_id", "name", "status", "created_at", "updated_at",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class BrandRecordV1:
+    schema_version: int
+    brand_id: str
+    organization_id: str
+    name: str
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        brand_id: str,
+        organization_id: str,
+        name: str,
+        status: str = "ACTIVE",
+    ) -> "BrandRecordV1":
+        return cls(
+            SCHEMA_VERSION,
+            _internal_id(brand_id, "brand_id"),
+            _internal_id(organization_id, "organization_id"),
+            _text(name, "name", limit=200),
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "BrandRecordV1":
+        _unknown_fields(value, {"schema_version", "brand_id", "organization_id", "name", "status"}, "BrandRecordV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "brand schema is unsupported.")
+        return cls.create(
+            brand_id=value.get("brand_id"),
+            organization_id=value.get("organization_id"),
+            name=value.get("name"),
+            status=value.get("status"),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryRecordV1:
+    schema_version: int
+    category_id: str
+    organization_id: str
+    name: str
+    parent_category_id: str | None
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        category_id: str,
+        organization_id: str,
+        name: str,
+        parent_category_id: str | None = None,
+        status: str = "ACTIVE",
+    ) -> "CategoryRecordV1":
+        normalized_category = _internal_id(category_id, "category_id")
+        parent = _optional_internal_id(parent_category_id, "category_id")
+        if parent == normalized_category:
+            raise ContractValidationError("INVALID_LINEAGE", "category cannot parent itself.")
+        return cls(
+            SCHEMA_VERSION,
+            normalized_category,
+            _internal_id(organization_id, "organization_id"),
+            _text(name, "name", limit=200),
+            parent,
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "CategoryRecordV1":
+        _unknown_fields(value, {"schema_version", "category_id", "organization_id", "name", "parent_category_id", "status"}, "CategoryRecordV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "category schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "category_id", "organization_id", "name", "parent_category_id", "status",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ShopRecordV1:
+    schema_version: int
+    shop_id: str
+    organization_id: str
+    brand_id: str | None
+    name: str
+    status: str
+    default_channel_id: str | None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        shop_id: str,
+        organization_id: str,
+        name: str,
+        brand_id: str | None = None,
+        status: str = "ACTIVE",
+        default_channel_id: str | None = None,
+    ) -> "ShopRecordV1":
+        return cls(
+            SCHEMA_VERSION,
+            _internal_id(shop_id, "shop_id"),
+            _internal_id(organization_id, "organization_id"),
+            _optional_internal_id(brand_id, "brand_id"),
+            _text(name, "name", limit=200),
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+            _optional_internal_id(default_channel_id, "channel_id"),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShopRecordV1":
+        _unknown_fields(value, {"schema_version", "shop_id", "organization_id", "brand_id", "name", "status", "default_channel_id"}, "ShopRecordV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "shop schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "shop_id", "organization_id", "brand_id", "name", "status", "default_channel_id",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ShopCategoryMembershipV1:
+    schema_version: int
+    membership_id: str
+    organization_id: str
+    shop_id: str
+    category_id: str
+    source: str
+    status: str
+    confidence: float | None
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        membership_id: str,
+        organization_id: str,
+        shop_id: str,
+        category_id: str,
+        source: str,
+        status: str | None = None,
+        confidence: float | None = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> "ShopCategoryMembershipV1":
+        normalized_source = _normalize_enum(source, "source", MEMBERSHIP_SOURCES)
+        normalized_status = (
+            "PROPOSED"
+            if status is None and normalized_source == "INFERRED"
+            else ("ACTIVE" if status is None else _normalize_enum(status, "status", MEMBERSHIP_STATUSES))
+        )
+        if normalized_source == "INFERRED" and normalized_status == "ACTIVE":
+            raise ContractValidationError("INFERRED_MEMBERSHIP_NOT_ACTIVE", "inferred membership must remain proposed.")
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(float(confidence))
+            or not 0 <= float(confidence) <= 1
+        ):
+            raise ContractValidationError("INVALID_CONFIDENCE", "membership confidence must be between 0 and 1.")
+        created = _timestamp(created_at or _now(), "created_at")
+        return cls(
+            SCHEMA_VERSION,
+            _namespaced_id(membership_id, "membership_id", ("membership",)),
+            _internal_id(organization_id, "organization_id"),
+            _internal_id(shop_id, "shop_id"),
+            _internal_id(category_id, "category_id"),
+            normalized_source,
+            normalized_status,
+            None if confidence is None else float(confidence),
+            created,
+            _timestamp(updated_at or created, "updated_at"),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShopCategoryMembershipV1":
+        _unknown_fields(value, {"schema_version", "membership_id", "organization_id", "shop_id", "category_id", "source", "status", "confidence", "created_at", "updated_at"}, "ShopCategoryMembershipV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "membership schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "membership_id", "organization_id", "shop_id", "category_id", "source",
+            "status", "confidence", "created_at", "updated_at",
+        )})
+
+    @property
+    def is_formal(self) -> bool:
+        return self.status == "ACTIVE" and self.source != "INFERRED"
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelRecordV1:
+    schema_version: int
+    channel_id: str
+    organization_id: str
+    shop_id: str
+    platform: str
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        channel_id: str,
+        organization_id: str,
+        shop_id: str,
+        platform: str,
+        status: str = "ACTIVE",
+    ) -> "ChannelRecordV1":
+        return cls(
+            SCHEMA_VERSION,
+            _internal_id(channel_id, "channel_id"),
+            _internal_id(organization_id, "organization_id"),
+            _internal_id(shop_id, "shop_id"),
+            _safe_ref(platform, "platform", limit=64),
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ChannelRecordV1":
+        _unknown_fields(value, {"schema_version", "channel_id", "organization_id", "shop_id", "platform", "status"}, "ChannelRecordV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "channel schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "channel_id", "organization_id", "shop_id", "platform", "status",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class MasterProductRefV1:
+    schema_version: int
+    master_product_id: str
+    organization_id: str
+    brand_id: str | None
+    category_id: str
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        master_product_id: str,
+        organization_id: str,
+        category_id: str,
+        brand_id: str | None = None,
+        status: str = "ACTIVE",
+    ) -> "MasterProductRefV1":
+        return cls(
+            SCHEMA_VERSION,
+            _namespaced_id(master_product_id, "master_product_id", ("master_product", "product")),
+            _internal_id(organization_id, "organization_id"),
+            _optional_internal_id(brand_id, "brand_id"),
+            _internal_id(category_id, "category_id"),
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "MasterProductRefV1":
+        _unknown_fields(value, {"schema_version", "master_product_id", "organization_id", "brand_id", "category_id", "status"}, "MasterProductRefV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "master product schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "master_product_id", "organization_id", "brand_id", "category_id", "status",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class StoreListingRefV1:
+    schema_version: int
+    listing_id: str
+    master_product_id: str | None
+    shop_id: str
+    channel_id: str
+    external_ref: ExternalRefV1 | None
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        listing_id: str,
+        shop_id: str,
+        channel_id: str,
+        master_product_id: str | None = None,
+        external_ref: ExternalRefV1 | Mapping[str, Any] | None = None,
+        status: str = "ACTIVE",
+    ) -> "StoreListingRefV1":
+        normalized_ref = (
+            None
+            if external_ref is None
+            else external_ref if isinstance(external_ref, ExternalRefV1) else ExternalRefV1.from_mapping(external_ref)
+        )
+        if normalized_ref is not None:
+            if normalized_ref.shop_id is not None and normalized_ref.shop_id != shop_id:
+                raise ContractValidationError("INVALID_EXTERNAL_SCOPE", "listing external ref shop does not match.")
+            if normalized_ref.channel_id is not None and normalized_ref.channel_id != channel_id:
+                raise ContractValidationError("INVALID_EXTERNAL_SCOPE", "listing external ref channel does not match.")
+        return cls(
+            SCHEMA_VERSION,
+            _namespaced_id(listing_id, "listing_id", ("listing", "store_listing")),
+            _optional_namespaced_id(master_product_id, "master_product_id", ("master_product", "product")),
+            _internal_id(shop_id, "shop_id"),
+            _internal_id(channel_id, "channel_id"),
+            normalized_ref,
+            _normalize_enum(status, "status", CONTEXT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "StoreListingRefV1":
+        _unknown_fields(value, {"schema_version", "listing_id", "master_product_id", "shop_id", "channel_id", "external_ref", "status"}, "StoreListingRefV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "store listing schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "listing_id", "master_product_id", "shop_id", "channel_id", "external_ref", "status",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["external_ref"] = None if self.external_ref is None else self.external_ref.as_dict()
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeGrantV1:
+    schema_version: int
+    grant_id: str
+    actor_id: str
+    scope: ScopeV1
+    capabilities: tuple[str, ...]
+    effect: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        grant_id: str,
+        actor_id: str,
+        scope: ScopeV1 | Mapping[str, Any],
+        capabilities: list[str] | tuple[str, ...],
+        effect: str,
+    ) -> "ScopeGrantV1":
+        normalized_capabilities = tuple(sorted({_safe_ref(item, "capability", limit=80) for item in capabilities}))
+        if not normalized_capabilities:
+            raise ContractValidationError("INVALID_GRANT", "scope grant requires a capability.")
+        return cls(
+            SCHEMA_VERSION,
+            _namespaced_id(grant_id, "grant_id", ("grant",)),
+            _safe_ref(actor_id, "actor_id"),
+            scope if isinstance(scope, ScopeV1) else ScopeV1.from_mapping(scope),
+            normalized_capabilities,
+            _normalize_enum(effect, "effect", GRANT_EFFECTS),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ScopeGrantV1":
+        _unknown_fields(value, {"schema_version", "grant_id", "actor_id", "scope", "capabilities", "effect"}, "ScopeGrantV1")
+        if value.get("schema_version") != SCHEMA_VERSION or not isinstance(value.get("capabilities"), list):
+            raise ContractValidationError("INVALID_SCOPE_GRANT", "scope grant schema or capabilities is invalid.")
+        return cls.create(**{key: value.get(key) for key in (
+            "grant_id", "actor_id", "scope", "capabilities", "effect",
+        )})
+
+    def covers(self, requested_scope: ScopeV1, capability: str) -> bool:
+        return _safe_ref(capability, "capability", limit=80) in self.capabilities and self.scope.contains(requested_scope)
+
+    def as_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["scope"] = self.scope.as_dict()
+        result["capabilities"] = list(self.capabilities)
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class RoleAssignmentV1:
+    schema_version: int
+    assignment_id: str
+    actor_id: str
+    role: str
+    scope: ScopeV1
+    status: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        assignment_id: str,
+        actor_id: str,
+        role: str,
+        scope: ScopeV1 | Mapping[str, Any],
+        status: str = "ACTIVE",
+    ) -> "RoleAssignmentV1":
+        return cls(
+            SCHEMA_VERSION,
+            _namespaced_id(assignment_id, "assignment_id", ("assignment",)),
+            _safe_ref(actor_id, "actor_id"),
+            _normalize_enum(role, "role", set(DEFAULT_ROLE_CAPABILITIES) | {"OWNER", "MANAGER", "OPERATOR", "CUSTOMERSERVICE", "LIVECONTROL", "LOGISTICS", "VIEWER"}),
+            scope if isinstance(scope, ScopeV1) else ScopeV1.from_mapping(scope),
+            _normalize_enum(status, "status", ROLE_ASSIGNMENT_STATUSES),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "RoleAssignmentV1":
+        _unknown_fields(value, {"schema_version", "assignment_id", "actor_id", "role", "scope", "status"}, "RoleAssignmentV1")
+        if value.get("schema_version") != SCHEMA_VERSION:
+            raise ContractValidationError("SCHEMA_VERSION_MISMATCH", "role assignment schema is unsupported.")
+        return cls.create(**{key: value.get(key) for key in (
+            "assignment_id", "actor_id", "role", "scope", "status",
+        )})
+
+    def as_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["scope"] = self.scope.as_dict()
+        return result
