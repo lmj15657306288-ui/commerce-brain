@@ -194,6 +194,8 @@ export function App() {
   const [actionMessage, setActionMessage] = useState("");
   const stopRealtime = useRef<(() => void) | null>(null);
   const sessionLoadInFlight = useRef(false);
+  const realtimeRefreshInFlight = useRef(false);
+  const realtimeRefreshQueue = useRef<Set<RefreshKey>>(new Set());
 
   const refresh = useCallback(
     async (targets?: RefreshKey[], options: { initial?: boolean } = {}) => {
@@ -243,7 +245,21 @@ export function App() {
         onStatus: setRealtimeStatus,
         onEvent: async (event) => {
           const targets = ownerEventRefreshTargets(event.event_type) as RefreshKey[];
-          if (targets.length) await refresh(targets);
+          for (const target of targets) realtimeRefreshQueue.current.add(target);
+          if (targets.length && !realtimeRefreshInFlight.current) {
+            realtimeRefreshInFlight.current = true;
+            void (async () => {
+              try {
+                while (realtimeRefreshQueue.current.size) {
+                  const queuedTargets = [...realtimeRefreshQueue.current];
+                  realtimeRefreshQueue.current.clear();
+                  await refresh(queuedTargets);
+                }
+              } finally {
+                realtimeRefreshInFlight.current = false;
+              }
+            })();
+          }
         },
       });
     },
