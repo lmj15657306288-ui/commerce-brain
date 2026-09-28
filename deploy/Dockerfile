@@ -9,6 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_VERSION=${APP_VERSION} \
     GIT_SHA=${GIT_SHA}
 
+LABEL org.opencontainers.image.title="Commerce Brain Control Plane" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}"
+
 WORKDIR /app
 
 COPY bridge/requirements.txt /app/requirements.txt
