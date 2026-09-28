@@ -59,6 +59,25 @@ def create_production_app() -> FastAPI:
     registry = ContextRegistry(adapter)
     ephemeral = RedisEphemeralLayer(redis_url)
 
+    def role_validator(
+        actor_id: str,
+        organization_id: str,
+        roles: tuple[str, ...],
+    ) -> bool:
+        declared = {role.upper() for role in roles}
+        for raw in adapter.list_records(
+            "role_assignments",
+            filters={"actor_id": actor_id},
+        ):
+            scope = raw.get("scope") or {}
+            if (
+                raw.get("status") == "ACTIVE"
+                and scope.get("organization_id") == organization_id
+                and str(raw.get("role", "")).upper() in declared
+            ):
+                return True
+        return False
+
     def device_validator(actor_id: str, organization_id: str, device_id: str) -> bool:
         raw = adapter.get_record("cp_device_sessions", device_id)
         if raw is None:
@@ -84,6 +103,7 @@ def create_production_app() -> FastAPI:
         issuer=issuer,
         audience=audience,
         device_validator=device_validator,
+        role_validator=role_validator,
     )
     app = create_app(
         adapter=adapter,

@@ -103,6 +103,28 @@ class JWTAuthTests(unittest.TestCase):
             )
             self.assertFalse(revoked.authenticated)
 
+    def test_declared_role_must_match_active_assignment_when_configured(self) -> None:
+        provider = self.provider(
+            role_validator=lambda actor, organization, roles: (
+                actor == "actor_owner"
+                and organization == "org_demo"
+                and "OWNER" in roles
+            ),
+        )
+        with mock.patch("control_plane.auth.time.time", return_value=1_790_500_100):
+            valid = provider.authenticate(
+                SimpleNamespace(headers={"authorization": f"Bearer {self.token()}"})
+            )
+            wrong_role = provider.authenticate(
+                SimpleNamespace(
+                    headers={
+                        "authorization": f"Bearer {self.token(roles=['VIEWER'])}"
+                    }
+                )
+            )
+        self.assertTrue(valid.authenticated)
+        self.assertFalse(wrong_role.authenticated)
+
 
 class ReadinessTests(unittest.TestCase):
     def test_default_app_is_not_production_ready(self) -> None:

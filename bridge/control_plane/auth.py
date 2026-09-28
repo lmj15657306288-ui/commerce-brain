@@ -111,6 +111,7 @@ class JWTAuthProvider:
         issuer: str,
         audience: str,
         device_validator: Callable[[str, str, str], bool] | None = None,
+        role_validator: Callable[[str, str, tuple[str, ...]], bool] | None = None,
         leeway_seconds: int = 30,
     ) -> None:
         if not public_key.strip() or not issuer.strip() or not audience.strip():
@@ -119,6 +120,7 @@ class JWTAuthProvider:
         self.issuer = issuer
         self.audience = audience
         self.device_validator = device_validator
+        self.role_validator = role_validator
         self.leeway_seconds = leeway_seconds
 
     @property
@@ -172,6 +174,13 @@ class JWTAuthProvider:
                 or not all(isinstance(item, str) and item for item in roles)
             ):
                 raise ValueError("identity claims are invalid")
+            normalized_roles = tuple(roles)
+            if self.role_validator is not None and not self.role_validator(
+                actor_id,
+                organization_id,
+                normalized_roles,
+            ):
+                raise ValueError("identity roles are not assigned")
             device_id = claims.get("device_id")
             if device_id is not None and (
                 not isinstance(device_id, str)
@@ -184,7 +193,7 @@ class JWTAuthProvider:
                 actor_id=actor_id,
                 organization_id=organization_id,
                 device_id=device_id,
-                roles=tuple(roles),
+                roles=normalized_roles,
                 authenticated=True,
                 auth_source="jwt",
             )
