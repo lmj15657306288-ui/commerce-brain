@@ -4,6 +4,8 @@ services:
       context: ..
       dockerfile: owner_mobile/Dockerfile
       args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
         VITE_CONTROL_PLANE_URL: ${VITE_CONTROL_PLANE_URL:-https://brain.apizz.cc.cd}
     image: commerce-brain-owner-mobile:${APP_VERSION:-dev}
     restart: unless-stopped
